@@ -44,6 +44,7 @@ body.has-banner .app{height:calc(100dvh - 32px)}
 .nav .count{margin-left:auto;font-size:12px;color:var(--ink-3);font-weight:500}
 .account{margin-top:auto;border-top:1px solid var(--line);padding-top:14px;font-size:13px;color:var(--ink-2);display:flex;flex-direction:column;gap:8px}
 .account .id{display:flex;align-items:center;gap:6px}
+.ver{font-size:11px;color:var(--ink-3);padding-top:6px;font-variant-numeric:tabular-nums}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);display:inline-block}
 .dot.on{background:var(--ok)}
 .btn{border:1px solid var(--line-2);background:#fff;border-radius:10px;padding:8px 12px;font-weight:600;font-size:14px}
@@ -212,6 +213,7 @@ textarea.input{min-height:80px;resize:vertical}
       <button data-view="memory">🧠 기억과 약속 <span class="count" id="memCount"></span></button>
     </nav>
     <div class="account" id="account"></div>
+    <div class="ver" id="ver"></div>
   </aside>
   <div class="scrim" id="scrim"></div>
 
@@ -658,6 +660,12 @@ $("#deleteAll").onclick = async () => {
 };
 
 // ── 시작 ─────────────────────────────────────────────────────
+// 지금 배포된 커밋 앞 7자리를 왼쪽 아래에 보여 준다(/version). 실패해도 화면은 그대로 쓴다.
+fetch("/version").then(r => r.json()).then(v => {
+  const c = v.commit === "local" ? "local" : String(v.commit || "").slice(0, 7);
+  $("#ver").textContent = `배포 버전 ${c}`;
+  $("#ver").title = `리비전 ${v.revision}`;
+}).catch(() => {});
 (async () => {
   cfg = await (await fetch("/api/config")).json();
   options = cfg.options;
