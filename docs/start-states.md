@@ -10,7 +10,7 @@
 | Cloud Run 첫 배포 ② | Google Cloud 프로젝트, gcloud 로그인과 프로젝트·리전 설정, API 4개 사용 설정, 템플릿으로 만든 내 저장소 | 아래 A | 20~40분 |
 | | `friend-agent` 서비스가 비밀값 `llm-api-key` 를 참조해 배포되어 있음 | 아래 B | 15분 |
 | 자동 배포 | (위와 같음) | | |
-| 자동 검사와 환경 분리 | 배포용·실행용 서비스 계정과 Workload Identity 설정, 저장소 변수 4개 | `docs/wif-setup.md` 0~4단계와 7단계 | 30분 |
+| 자동 검사와 환경 분리 | 배포용·실행용·빌드용 서비스 계정과 Workload Identity 설정, 저장소 변수 5개 | `docs/wif-setup.md` 0~4단계와 7단계 | 30분 |
 | | `.github/workflows/deploy.yml` 이 main 머지 때 배포함 | 아래 C | 10분 |
 | Dockerfile | `.github/workflows/ci.yml`, staging·production 으로 나눠 배포하는 `deploy.yml` | 아래 D | 15분 |
 | | GitHub 환경 `staging`·`production`(변수 SERVICE, ENV. production 은 배포 승인자 지정), `staging` 브랜치 | 아래 D | 15분 |
@@ -106,7 +106,7 @@ PR로 올려 staging, production 에 배포한다.
 `.github/workflows/deploy.yml` 의 배포 단계 `flags` 줄을 아래처럼 바꾼다. 앱이 `/health` 에 정상 응답해야 요청을 받기 시작한다.
 
 ```text
-flags: --service-account=${{ vars.RUNTIME_SA }} --startup-probe=httpGet.path=/health,periodSeconds=5,failureThreshold=12,timeoutSeconds=2
+flags: --service-account=${{ vars.RUNTIME_SA }} --build-service-account=projects/${{ vars.GCP_PROJECT_ID }}/serviceAccounts/${{ vars.BUILD_SA }} --startup-probe=httpGet.path=/health,periodSeconds=5,failureThreshold=12,timeoutSeconds=2
 ```
 
 PR로 올려 배포한 뒤, 콘솔의 리비전 상세에서 시작 확인이 `/health` 로 설정되었는지 본다.

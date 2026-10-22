@@ -23,4 +23,4 @@
 
 어느 실습부터 시작하든 필요한 상태와 만드는 방법은 `docs/start-states.md` 에 있다.
 
-워크플로가 읽는 값(`GCP_PROJECT_ID`, `WIF_PROVIDER`, `DEPLOY_SA`, `RUNTIME_SA` 등)은 `docs/wif-setup.md` 절차로 만든다. 액션 버전은 바꾸지 않는다.
+워크플로가 읽는 값(`GCP_PROJECT_ID`, `WIF_PROVIDER`, `DEPLOY_SA`, `RUNTIME_SA`, `BUILD_SA` 등)은 `docs/wif-setup.md` 절차로 만든다. 액션 버전은 바꾸지 않는다.
