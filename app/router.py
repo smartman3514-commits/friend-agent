@@ -218,6 +218,9 @@ def choose(message, history, now, location, llm):
         result.tools = []
         result.dropped = []
 
+    # 약속마다 같은 문구가 붙으면 '이번 턴' 패널에 같은 줄이 여러 번 보이므로, 순서를 지키며 한 번씩만 남긴다
+    result.guards = list(dict.fromkeys(result.guards))
+
     log("INFO", "도구 선택", tools=[t["name"] for t in result.tools], confidence=round(result.confidence, 2),
         decided_by=result.decided_by, action=result.action)
     return result
