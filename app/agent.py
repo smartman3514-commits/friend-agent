@@ -30,8 +30,13 @@ def system_prompt(character, now, location, memories, summary, tool_lines=(), cl
         parts.append(block)
     if tool_lines:
         parts.append("[도구 결과]\n" + "\n".join(f"- {line}" for line in tool_lines))
+        parts.append("[도구 결과 전하기]\n약속의 날짜와 시각은 [도구 결과]에 적힌 그대로 말한다. 사용자가 말한 날짜와 다르면 [도구 결과]가 맞다. "
+                     "'이번에 실제로 저장된 약속'에 없는 약속은 '저장했어', '저장할게'라고 말하지 않고, 저장한 것을 목록으로 다시 적을 때도 거기 있는 것만 적는다. "
+                     "앞선 대화에서 그렇게 말했더라도 지금 [도구 결과]가 맞다. "
+                     "저장하지 못한 약속은 그 이유를 짧게 전한다.")
     if clarify:
-        parts.append("[되묻기]\n사용자가 무엇을 원하는지 확실하지 않다. 짧게 되물어서 확인한다.")
+        parts.append("[되묻기]\n사용자가 무엇을 원하는지 확실하지 않다. 짧게 되물어서 확인한다. "
+                     "이번에는 도구를 쓰지 않았으니 약속을 저장했다거나 저장하겠다고 말하지 않는다.")
     return "\n\n".join(parts)
 
 
@@ -74,8 +79,17 @@ def run_turn(message, uid, llm, store, show_panel):
             yield {"type": "reminder", "action": r.name, "summary": r.summary}
 
     # ④ 답 생성
+    lines = [r.summary for r in results]
+    if choice.dropped:  # 한 번에 쓰는 도구 수를 넘어 버린 것도 알려야 "다 저장했어"라고 하지 않는다
+        skipped = ", ".join(f"'{t['args'].get('text')}'" if t["args"].get("text") else TOOLS[t["name"]]["label"]
+                            for t in choice.dropped)
+        lines.append(f"한 번에 처리하는 개수를 넘어 처리하지 않았습니다(저장 안 됨): {skipped}. 다시 말해 주면 처리합니다.")
+    tried = [t for t in [*choice.tools, *choice.dropped] if t["name"] == "create_reminder"]
+    if tried:  # 모델이 "저장할게"라고 지어내지 않도록, 실제로 저장된 것을 사실 한 줄로 못박는다
+        done = [f"'{r.data['text']}'" for r in results if r.ok and r.name == "create_reminder"]
+        lines.append(f"이번에 실제로 저장된 약속: {', '.join(done) if done else '없음'}.")
     system = system_prompt(character, now, settings["location"], memories, summary,
-                           [r.summary for r in results], clarify=choice.action == "clarify")
+                           lines, clarify=choice.action == "clarify")
     if show_panel:
         yield {"type": "context", "memories": [m["text"] for m in memories],
                "summary": summary["text"] if summary else None, "recent_messages": len(history)}
