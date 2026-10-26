@@ -174,10 +174,17 @@ def create_reminder(args, ctx):
     if not text:
         return ToolResult("create_reminder", False, "무엇을 알려 줄지 몰라 약속을 저장하지 않았습니다.")
     due, error = when.check_due(args.get("due_at"), now)
+    error = args.get("rejected") or error  # 도구 선택기의 안전장치가 막은 약속(router.py)
     if error:
-        return ToolResult("create_reminder", False, f"약속을 저장하지 않았습니다: {error}")
-    reminder = ctx.store.add_reminder(ctx.user_id, text, due)
+        return ToolResult("create_reminder", False, f"'{text}' 약속을 저장하지 않았습니다: {error}")
     local = due.astimezone(now.tzinfo)
+    # 같은 사진을 다시 보내도 같은 약속이 두 개가 되지 않게 한다
+    same = next((r for r in ctx.store.list_reminders(ctx.user_id, status="pending")
+                 if r["text"] == text and r["due_at"] == due), None)
+    if same:
+        return ToolResult("create_reminder", True, f"이미 저장된 약속입니다: {when.label(local)}에 '{text}'.",
+                          {"id": same["id"], "text": text, "due_at": local.isoformat()})
+    reminder = ctx.store.add_reminder(ctx.user_id, text, due)
     return ToolResult("create_reminder", True, f"약속을 저장했습니다: {when.label(local)}에 '{text}'.",
                       {"id": reminder["id"], "text": text, "due_at": local.isoformat()})
 
