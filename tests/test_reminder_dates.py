@@ -64,6 +64,21 @@ def test_past_date_is_not_moved_to_another_day():
     assert "저장하지 않았습니다" in reply and "지났습니다" in reply
 
 
+def test_blocking_several_past_reminders_reports_the_guard_once():
+    now = when.now_in("Asia/Seoul")
+    pasts = [now - timedelta(days=d) for d in (7, 5, 3)]
+    tomorrow = (now + timedelta(days=1)).replace(hour=19, minute=0)
+    # 사진 속 지난 일정 여러 개를 모델이 전부 내일로 옮겨 넘긴 상황
+    tools = [reminder(f"지난 일정{i}", tomorrow + timedelta(minutes=i)) for i in range(1, 4)]
+    message = " / ".join(f"{md(d)} 19:00 일정{i}" for i, d in enumerate(pasts, 1)) + " 알려 줘"
+    events, _ = chat_with(tools, message)
+    guards = next(e for e in events if e["type"] == "turn")["guards"]
+    blocked = [g for g in guards if "모두 지났는데" in g]
+    assert len(blocked) == 1
+    assert len(guards) == len(set(guards))
+    assert all(e["ok"] is False for e in events if e["type"] == "tool")
+
+
 def schedule(n, tag):
     now = when.now_in("Asia/Seoul")
     days = [(now + timedelta(days=d)).replace(hour=10, minute=0) for d in range(2, 2 + n)]
