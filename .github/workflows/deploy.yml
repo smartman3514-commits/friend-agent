@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     env:
-      IMAGE: ${{ vars.AR_REPO }}/friend-agent:${{ github.sha }}
+      STAGING_SERVICE: friend-agent-staging
     steps:
       - uses: actions/checkout@v7
 
@@ -33,11 +33,26 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
-      - name: 이미지 만들기와 올리기
+      # 1. staging 브랜치에서만 이미지를 만들고, 이미지 이름과 커밋을 다음 단계로 넘긴다
+      - name: 이미지 만들기와 올리기 (staging)
+        if: github.ref_name != 'main'
         run: |
+          IMAGE="${{ vars.AR_REPO }}/friend-agent:${{ github.sha }}"
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
           docker build --tag "$IMAGE" .
           docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "COMMIT=${{ github.sha }}" >> "$GITHUB_ENV"
+
+      # 2. main 브랜치에서는 이미지를 만들지 않고, staging 리비전의 다이제스트와 커밋을 찾는다
+      - name: staging 이미지 찾기 (production 승격)
+        if: github.ref_name == 'main'
+        run: |
+          REV=$(gcloud run services describe "$STAGING_SERVICE" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent) | .revisionName')
+          gcloud run revisions describe "$REV" --region us-central1 --format json > rev.json
+          echo "IMAGE=$(jq -r '.status.imageDigest' rev.json)" >> "$GITHUB_ENV"
+          echo "COMMIT=$(jq -r '.spec.containers[0].env[] | select(.name=="COMMIT_SHA") | .value' rev.json)" >> "$GITHUB_ENV"
+          echo "staging 리비전 $REV 의 이미지를 승격한다"
 
       - id: deploy
         uses: google-github-actions/deploy-cloudrun@v3
@@ -47,7 +62,7 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           image: ${{ env.IMAGE }}
           env_vars: |
-            COMMIT_SHA=${{ github.sha }}
+            COMMIT_SHA=${{ env.COMMIT }}
             ENV=${{ vars.ENV }}
           flags: --service-account=${{ vars.RUNTIME_SA }}
 
