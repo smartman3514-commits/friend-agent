@@ -70,3 +70,16 @@ jobs:
         run: |
           echo "배포된 주소 ${{ steps.deploy.outputs.url }}"
           echo "배포한 이미지 $IMAGE"
+
+      # 4. 배포가 끝나면 서비스, 커밋, 리비전, 다이제스트를 실행 요약(job summary)에 표로 남긴다 (연결표 자동 기록)
+      - name: 배포 기록 남기기
+        run: |
+          REV=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent) | .revisionName')
+          DIGEST=$(gcloud run revisions describe "$REV" --region us-central1 --format "value(status.imageDigest)")
+          {
+            echo "### 배포 기록 (${{ vars.ENV }})"
+            echo ""
+            echo "| 서비스 | 커밋 | 리비전 | 이미지 다이제스트 |"
+            echo "|---|---|---|---|"
+            echo "| ${{ vars.SERVICE }} | \`${COMMIT:0:12}\` | \`$REV\` | \`${DIGEST##*@}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
