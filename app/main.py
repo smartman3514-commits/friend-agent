@@ -84,6 +84,7 @@ def health():
 
 @app.get("/version")
 def version():
+    time.sleep(1.5)  # 카나리 시험용으로 일부러 느리게 만든 버전: /health 는 정상이라 배포·스모크는 통과한다. 확인한 뒤 Revert 한다.
     return {"commit": settings.commit, "revision": settings.revision, "env": settings.env,
             "llm": settings.provider, "model": settings.model, "storage": settings.storage, "auth": settings.auth,
             "banner": os.environ.get("BANNER", "")}
