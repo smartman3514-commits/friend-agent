@@ -79,8 +79,7 @@ def home():
 
 @app.get("/health")
 def health():
-    # 스테이지 6 시험용으로 일부러 망가뜨린 버전: 내용은 그대로지만 항상 503. 확인한 뒤 Revert 한다.
-    return JSONResponse({"status": "ok"}, status_code=503)
+    return {"status": "ok"}
 
 
 @app.get("/version")
