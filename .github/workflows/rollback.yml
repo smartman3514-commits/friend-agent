@@ -1,0 +1,70 @@
+# 원클릭 롤백: Actions 탭 > rollback > Run workflow 버튼으로만 실행한다.
+# 서비스의 트래픽 100%를 지정한 리비전(비워 두면 지금 리비전 바로 전의 정상 리비전)으로 옮긴다.
+# 이미지를 만들거나 배포하지 않고 트래픽 설정만 바꾸므로 몇 초~몇십 초 안에 끝난다.
+# 다시 새 버전으로 돌아가려면 같은 버튼에 새 리비전 이름을 넣어 실행한다.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "되돌릴 환경"
+        type: choice
+        options: [production, staging]
+        default: production
+      revision:
+        description: "되돌아갈 리비전 이름 (비워 두면 지금 리비전 바로 전의 정상 리비전)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    # 배포와 같은 환경을 쓴다: production 은 배포와 같은 승인을 거치고, SERVICE 변수도 환경에서 받는다
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      # 1. 되돌아갈 리비전을 정한다. 입력이 없으면 지금 트래픽을 받는 리비전보다 먼저 만든 리비전 가운데
+      #    준비 완료(Ready)였던 가장 최근 것을 고른다. 시작에 실패한 리비전은 건너뛴다.
+      - name: 되돌아갈 리비전 정하기
+        env:
+          INPUT_REV: ${{ inputs.revision }}
+        run: |
+          CUR=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent // 0) | .revisionName')
+          if [ -n "$INPUT_REV" ]; then
+            TARGET="$INPUT_REV"
+          else
+            TARGET=$(gcloud run revisions list --service "${{ vars.SERVICE }}" --region us-central1 --format json \
+              | jq -r --arg cur "$CUR" 'sort_by(.metadata.creationTimestamp) | reverse
+                  | (map(.metadata.name) | index($cur)) as $i
+                  | .[($i + 1):][] | select(any(.status.conditions[]; .type == "Ready" and .status == "True"))
+                  | .metadata.name' | head -1)
+          fi
+          if [ -z "$TARGET" ]; then echo "되돌아갈 리비전을 찾지 못했다"; exit 1; fi
+          echo "지금 리비전 $CUR → 되돌아갈 리비전 $TARGET"
+          echo "TARGET=$TARGET" >> "$GITHUB_ENV"
+          echo "CUR=$CUR" >> "$GITHUB_ENV"
+
+      # 2. 트래픽 100%를 그 리비전으로 옮기고, 서비스 주소의 /version 으로 결과를 확인한다
+      - name: 트래픽 옮기기
+        run: |
+          gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$TARGET=100"
+          URL=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format 'value(status.url)')
+          curl -s --max-time 20 "$URL/version"; echo
+          {
+            echo "### 롤백 (${{ inputs.environment }})"
+            echo ""
+            echo "| 서비스 | 이전 | 지금 |"
+            echo "|---|---|---|"
+            echo "| ${{ vars.SERVICE }} | \`$CUR\` | \`$TARGET\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
