@@ -54,6 +54,8 @@ jobs:
           echo "COMMIT=$(jq -r '.spec.containers[0].env[] | select(.name=="COMMIT_SHA") | .value' rev.json)" >> "$GITHUB_ENV"
           echo "staging 리비전 $REV 의 이미지를 승격한다"
 
+      # 3. 새 리비전을 트래픽 0%로 올리고 candidate 태그를 붙인다 (블루그린의 green). 사용자는 아직 이전 리비전을 쓴다.
+      #    태그 이름은 서비스 안에서 하나뿐이라, 다음 배포 때 candidate 는 이전 리비전에서 떨어져 새 리비전으로 옮겨 간다.
       - id: deploy
         uses: google-github-actions/deploy-cloudrun@v3
         with:
@@ -61,6 +63,8 @@ jobs:
           region: us-central1
           project_id: ${{ vars.GCP_PROJECT_ID }}
           image: ${{ env.IMAGE }}
+          no_traffic: true
+          tag: candidate
           env_vars: |
             COMMIT_SHA=${{ env.COMMIT }}
             ENV=${{ vars.ENV }}
@@ -71,7 +75,37 @@ jobs:
           echo "배포된 주소 ${{ steps.deploy.outputs.url }}"
           echo "배포한 이미지 $IMAGE"
 
-      # 4. 배포가 끝나면 서비스, 커밋, 리비전, 다이제스트를 실행 요약(job summary)에 표로 남긴다 (연결표 자동 기록)
+      # 4. 스모크 테스트: 서비스 주소는 아직 이전 리비전이 답하므로, 새 리비전에만 닿는 태그 URL로 확인한다.
+      #    /health 가 200이고 /version 의 commit 이 이번 커밋과 같아야 통과. 콜드 스타트를 감안해 5초 간격으로 최대 12번 묻는다.
+      #    끝까지 실패하면 exit 1 로 이 단계가 실패하고, 아래 전환 단계는 실행되지 않는다.
+      - name: 스모크 테스트 (태그 URL)
+        run: |
+          URL=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
+          echo "확인할 태그 URL $URL"
+          for i in $(seq 1 12); do
+            HEALTH=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$URL/health" || true)
+            GOT=$(curl -s --max-time 5 "$URL/version" | jq -r '.commit // empty' || true)
+            echo "시도 $i: /health $HEALTH, commit ${GOT:0:12} (기대 ${COMMIT:0:12})"
+            if [ "$HEALTH" = "200" ] && [ "$GOT" = "$COMMIT" ]; then
+              echo "스모크 테스트 통과"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "스모크 테스트 실패: 전환하지 않는다. 사용자는 계속 이전 리비전을 쓴다."
+          exit 1
+
+      # 5. 전환: 지금 트래픽을 받는 리비전 이름을 남기고(롤백할 곳), 가장 최근 리비전으로 100% 옮긴다.
+      #    --to-latest 로 옮겨야 트래픽이 특정 리비전·태그에 묶이지 않는다(묶이면 다음 수동 배포가 0%로 남는다).
+      - name: 전환 (블루그린)
+        run: |
+          OLD=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent // 0) | .revisionName')
+          echo "전환 전 리비전 (롤백할 곳) $OLD"
+          echo "### 전환 전 리비전 (롤백할 곳): \`$OLD\`" >> "$GITHUB_STEP_SUMMARY"
+          gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-latest
+          curl -s "$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format 'value(status.url)')/version"
+
+      # 6. 배포가 끝나면 서비스, 커밋, 리비전, 다이제스트를 실행 요약(job summary)에 표로 남긴다 (연결표 자동 기록)
       - name: 배포 기록 남기기
         run: |
           REV=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent) | .revisionName')
