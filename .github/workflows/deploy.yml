@@ -64,7 +64,7 @@ jobs:
           env_vars: |
             COMMIT_SHA=${{ env.COMMIT }}
             ENV=${{ vars.ENV }}
-          flags: --service-account=${{ vars.RUNTIME_SA }}
+          flags: --service-account=${{ vars.RUNTIME_SA }} --startup-probe=httpGet.path=/health,periodSeconds=5,failureThreshold=12,timeoutSeconds=2
 
       - name: 배포 결과
         run: |
