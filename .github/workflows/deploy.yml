@@ -95,17 +95,36 @@ jobs:
           echo "스모크 테스트 실패: 전환하지 않는다. 사용자는 계속 이전 리비전을 쓴다."
           exit 1
 
-      # 5. 전환: 지금 트래픽을 받는 리비전 이름을 남기고(롤백할 곳), 가장 최근 리비전으로 100% 옮긴다.
-      #    --to-latest 로 옮겨야 트래픽이 특정 리비전·태그에 묶이지 않는다(묶이면 다음 수동 배포가 0%로 남는다).
-      - name: 전환 (블루그린)
+      # 5. 카나리: 지금 트래픽을 받는 리비전(롤백할 곳)과 새 리비전 이름을 남기고, 새 리비전에 10% → 50% 를 보낸다.
+      #    단계마다 2분 동안 scripts/canary_check.py 가 서비스 주소로 직접 요청을 보내 실패율과 느린 쪽 응답 시간(p95)을 잰다.
+      #    기준을 넘으면 이전 리비전으로 100% 되돌리고 워크플로를 실패로 끝낸다(전환 단계로 가지 않음).
+      - name: 카나리 10% → 50% (자동 판단)
         run: |
-          OLD=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent // 0) | .revisionName')
-          echo "전환 전 리비전 (롤백할 곳) $OLD"
-          echo "### 전환 전 리비전 (롤백할 곳): \`$OLD\`" >> "$GITHUB_STEP_SUMMARY"
+          SVC_JSON=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json)
+          OLD=$(echo "$SVC_JSON" | jq -r '.status.traffic | max_by(.percent // 0) | .revisionName')
+          NEW=$(echo "$SVC_JSON" | jq -r '.status.traffic[] | select(.tag=="candidate") | .revisionName')
+          URL=$(echo "$SVC_JSON" | jq -r '.status.url')
+          echo "이전 리비전 (롤백할 곳) $OLD / 새 리비전 $NEW"
+          echo "### 카나리: 이전 리비전 (롤백할 곳) \`$OLD\` → 새 리비전 \`$NEW\`" >> "$GITHUB_STEP_SUMMARY"
+          for P in 10 50; do
+            gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$NEW=$P,$OLD=$((100 - P))"
+            echo "#### 새 리비전 $P%" >> "$GITHUB_STEP_SUMMARY"
+            if ! python3 scripts/canary_check.py "$URL" "$NEW" "$OLD" --seconds 120; then
+              echo "기준을 넘어 이전 리비전 $OLD 로 되돌린다"
+              gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$OLD=100"
+              echo "**롤백: $P% 단계에서 기준을 넘어 \`$OLD\` 로 100% 되돌림**" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          done
+
+      # 6. 전환: 카나리를 통과하면 가장 최근 리비전으로 100% 옮긴다.
+      #    --to-latest 로 옮겨야 트래픽이 특정 리비전·태그에 묶이지 않는다(묶이면 다음 수동 배포가 0%로 남는다).
+      - name: 전환 100%
+        run: |
           gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-latest
           curl -s "$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format 'value(status.url)')/version"
 
-      # 6. 배포가 끝나면 서비스, 커밋, 리비전, 다이제스트를 실행 요약(job summary)에 표로 남긴다 (연결표 자동 기록)
+      # 7. 배포가 끝나면 서비스, 커밋, 리비전, 다이제스트를 실행 요약(job summary)에 표로 남긴다 (연결표 자동 기록)
       - name: 배포 기록 남기기
         run: |
           REV=$(gcloud run services describe "${{ vars.SERVICE }}" --region us-central1 --format json | jq -r '.status.traffic | max_by(.percent) | .revisionName')
