@@ -170,17 +170,29 @@ def model_choose(message, history, now, location, llm):
     user = (f"[지금] {now.isoformat()} ({when.WEEKDAYS[now.weekday()]}요일)\n[달력]\n{when.calendar_hint(now)}\n"
             f"[사용자 지역] {location}\n[최근 대화]\n{recent}\n\n[메시지]\n{message}")
     data = llm.complete_json(router_prompt(), user)
+    guards = []
+    # 안전장치: 도구를 2개 이상 고를 때 모델이 confidence, reason 을 tools 목록 안 항목으로 넣는 일이 있다.
+    # 그대로 두면 확신도가 0으로 읽혀 되묻기로 빠지고 도구를 하나도 쓰지 않는다(11-02 staging 트레이스).
+    for t in data.get("tools") or []:
+        if isinstance(t, dict) and "name" not in t and "confidence" in t and "confidence" not in data:
+            data["confidence"] = t["confidence"]
+            data.setdefault("reason", t.get("reason", ""))
+            guards.append("모델이 확신도를 도구 목록 안에 적어 꺼내 썼습니다.")
+    # "다음 공휴일"처럼 기간을 말하지 않으면 앞으로 1년에서 찾는다. 모델은 이번 달로 좁혀 '없음'을 받곤 했다.
+    open_holidays = not re.search(r"\d{1,2}\s*월|이번\s*달|다음\s*달|올해|내년", message)
     tools, seen = [], set()
     for t in data.get("tools") or []:
         if isinstance(t, dict) and t.get("name") in TOOLS:
             args = t.get("args") if isinstance(t.get("args"), dict) else {}
+            if t["name"] == "get_holidays" and open_holidays and args:
+                args = {}
+                guards.append("기간을 말하지 않은 공휴일 질문이라 앞으로 1년에서 찾습니다.")
             key = (t["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
             if key in seen:  # 모델이 같은 약속을 두 번 고르면 두 번 저장된다
                 continue
             seen.add(key)
             tools.append({"name": t["name"], "args": args})
     confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
-    guards = []
     # 안전장치: 알려 달라는 부탁이 없는데 고른 약속은 뺀다(프롬프트로만 막으면 모델이 일정 이야기를 약속으로 저장한다)
     last_answer = next((m["content"] for m in reversed(history) if m["role"] == "assistant"), "")
     if not REQUEST_PATTERN.search(message) and not OFFER_PATTERN.search(last_answer):
