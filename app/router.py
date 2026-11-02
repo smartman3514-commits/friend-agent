@@ -114,12 +114,28 @@ def explicit_dates(message, now):
     return found
 
 
-def next_week_date(message, now):
-    """'다음 주 토요일'처럼 다음 주 요일이 하나만 적혀 있으면 그 날짜. 'M월 D일'이 함께 있거나 요일이 여러 개면 None."""
-    found = set(re.findall(r"다음\s*주\s*([월화수목금토일])요일", message))
-    if len(found) != 1 or explicit_dates(message, now):
+def spoken_date(text, message, now):
+    """약속 글(text)이 나온 메시지 조각의 '내일', '모레', '목요일', '다음 주 토요일'을 날짜로 바꾼다. (표현, 날짜) 또는 None.
+
+    약속을 여러 개 부탁하면 쉼표나 '그리고'로 조각을 나눠 약속 글의 낱말이 든 조각에서만 찾는다.
+    'M월 D일'이 적혀 있거나, 한 조각에 날짜 표현이 둘 이상이거나("오늘 말고 내일"), 요일만 말했는데 그날이 오늘이면
+    어느 날인지 코드가 단정할 수 없어 None.
+    """
+    if explicit_dates(message, now):
         return None
-    return (now + timedelta(days=when.day_offset(f"다음 주 {found.pop()}요일", now))).date()
+    parts = [p for p in re.split(r",|\s그리고\s", message) if p.strip()]
+    if len(parts) > 1:
+        words = [w for w in re.findall(r"[가-힣A-Za-z0-9]+", text) if len(w) >= 2]
+        parts = [p for p in parts if any(w in p or w[:2] in p for w in words)]
+    if len(parts) != 1:
+        return None
+    hits = [w for w in when.DAY_WORDS if w in parts[0]] + re.findall(r"(?:다음\s*주\s*)?[월화수목금토일]요일", parts[0])
+    if len(hits) != 1:
+        return None
+    offset = when.day_offset(hits[0], now)
+    if offset is None or (offset == 0 and hits[0] not in when.DAY_WORDS):
+        return None
+    return hits[0], (now + timedelta(days=offset)).date()
 
 
 def due_date(value):
@@ -220,15 +236,16 @@ def model_choose(message, history, now, location, llm):
                 if fixed:
                     result.guards.append(f"{t['name']} 의 {key} 연도가 지난 연도라 {now.year}년으로 고쳤습니다.")
 
-    # 안전장치: '다음 주 토요일'인데 모델이 이번 주 토요일로 잡으면 코드가 계산한 날짜로 고친다(시각은 그대로)
-    # (11-02 staging 트레이스: 달력에 다음 주가 11/9~15로 적혀 있는데도 11/7로 저장했다)
-    want = next_week_date(message, now)
-    for t in result.tools if want else []:
+    # 안전장치: '내일', '목요일', '다음 주 토요일'을 모델이 다른 날로 잡으면 코드가 계산한 날짜로 고친다(시각은 그대로)
+    # (11-02 staging 트레이스: '다음 주 토요일'을 이번 주 11/7로, '내일 저녁 9시'를 오늘 11/2로 저장했다)
+    for t in result.tools:
         due = due_date(t["args"].get("due_at")) if t["name"] == "create_reminder" else None
-        if due and due != want:
+        spoken = due and spoken_date(str(t["args"].get("text") or ""), message, now)
+        if spoken and due != spoken[1]:
+            word, want = spoken
             fixed = datetime.fromisoformat(t["args"]["due_at"]).replace(year=want.year, month=want.month, day=want.day)
             t["args"]["due_at"] = fixed.isoformat()
-            result.guards.append(f"'다음 주' 날짜를 {when.date_label(due)}로 잡아 {when.date_label(want)}로 고쳤습니다.")
+            result.guards.append(f"'{word}' 날짜를 {when.date_label(due)}로 잡아 {when.date_label(want)}로 고쳤습니다.")
 
     # 안전장치: 메시지에 적힌 날짜가 모두 지났는데 모델이 다른 날로 옮겨 약속을 잡으면 막는다
     # (지난 일정이 적힌 사진을 보내면 모델이 오늘 같은 시각으로 바꿔 저장하던 문제)
