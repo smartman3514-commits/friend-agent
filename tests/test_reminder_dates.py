@@ -132,3 +132,21 @@ def test_day_before_reminder_for_future_date_is_allowed():
     events, _ = chat_with([reminder("모임 하루 전 준비", day_before)], f"{md(event)} 모임 하루 전에 알려 줘")
     assert next(e for e in events if e["type"] == "tool")["ok"] is True
     assert "모임 하루 전 준비" in saved_texts()
+
+
+# 11-02 staging 트레이스에서 발견: "이사 간다"는 이야기만 했는데 모델이 약속을 저장했다.
+def test_reminder_without_a_request_is_not_saved():
+    now = when.now_in("Asia/Seoul")
+    day = (now + timedelta(days=12)).replace(hour=9, minute=0)
+    events, _ = chat_with([reminder("이사", day)], f"나 {md(day)}에 이사 가")
+    turn = next(e for e in events if e["type"] == "turn")
+    assert turn["tools"] == []
+    assert any("알려 달라는 부탁이 없어" in g for g in turn["guards"])
+    assert "이사" not in saved_texts()
+
+
+def test_reminder_with_a_request_is_still_saved():
+    now = when.now_in("Asia/Seoul")
+    day = (now + timedelta(days=12)).replace(hour=9, minute=0)
+    chat_with([reminder("이사 준비", day)], f"{md(day)} 아침에 이사 준비 알려 줘")
+    assert "이사 준비" in saved_texts()

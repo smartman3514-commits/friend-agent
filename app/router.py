@@ -38,6 +38,11 @@ KEYWORDS = {
 }
 # "토요일 날씨 알려 줘"는 약속이 아니다. 약속은 "~라고 알려 줘", "잊지 않게", "리마인드"처럼 부탁하는 말이 있어야 한다.
 ASK_PATTERN = re.compile(r"(라고|으라고|하라고)\s*(꼭\s*)?(알려|말해)|잊지 않게|리마인드|깨워")
+# 모델이 고른 약속을 남길지 볼 때 쓰는 더 넓은 부탁 표현. "11월 14일에 이사 가"처럼 일정 이야기만 하면 약속이 아니다.
+# (11-02 staging 트레이스: 이사 이야기만 했는데 모델이 확신도 1로 약속을 저장하고, 다음 메시지에서 또 저장했다)
+REQUEST_PATTERN = re.compile(r"알려\s*(줘|주|달)|알림|약속으로\s*저장|잊지|리마인|깨워|챙겨\s*(줘|주)|말해\s*(줘|주)")
+# 바로 앞 답에서 캐릭터가 먼저 "알려 줄까?"라고 물었으면, "응"만 해도 부탁으로 본다
+OFFER_PATTERN = re.compile(r"알려\s*줄까|알림.*(할까|맞춰|설정)")
 CANCEL_WORDS = ["취소", "지워", "없던 걸로", "안 알려 줘도", "안 알려줘도"]
 LIST_PATTERN = re.compile(r"(약속|알림|리마인드).*(뭐|목록|있어|있지|있었|보여|확인)")
 
@@ -168,6 +173,14 @@ def model_choose(message, history, now, location, llm):
             tools.append({"name": t["name"], "args": args})
     confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
     guards = []
+    # 안전장치: 알려 달라는 부탁이 없는데 고른 약속은 뺀다(프롬프트로만 막으면 모델이 일정 이야기를 약속으로 저장한다)
+    last_answer = next((m["content"] for m in reversed(history) if m["role"] == "assistant"), "")
+    if not REQUEST_PATTERN.search(message) and not OFFER_PATTERN.search(last_answer):
+        unasked = [t for t in tools if t["name"] == "create_reminder"]
+        if unasked:
+            tools = [t for t in tools if t not in unasked]
+            guards.append("알려 달라는 부탁이 없어 약속을 저장하지 않았습니다: "
+                          + ", ".join(f"'{t['args'].get('text')}'" for t in unasked))
     # 안전장치: 약속을 여러 개 고를 때 메시지에 없는 약속(지시문 예시 '우산 챙기기' 등)을 지어내 개수를 채우면 뺀다
     if sum(t["name"] == "create_reminder" for t in tools) > 1:
         made_up = [t for t in tools if t["name"] == "create_reminder" and invented(str(t["args"].get("text") or ""), message)]
