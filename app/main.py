@@ -13,12 +13,13 @@ import html
 import json
 import os
 import time
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app import agent, ocr, when
+from app import agent, ocr, tracing, when
 from app.auth import Auth, User
 from app.config import ROOT, load_settings
 from app.llm import make_llm
@@ -66,6 +67,11 @@ class SettingsRequest(BaseModel):
 class ReportRequest(BaseModel):
     message_id: int
     reason: str = ""
+
+
+class FeedbackRequest(BaseModel):
+    message_id: int
+    value: Literal["up", "down"]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -185,10 +191,29 @@ async def read_photo(photo: UploadFile, user: User = Depends(current_user)):
         raise HTTPException(500, str(error)) from error
 
 
+def own_answer(user, message_id):
+    """로그인한 사용자 자신의 답(assistant 메시지)만 반응을 받는다. 남의 메시지 ID면 404."""
+    message = store.get_message(user.id, message_id)
+    if not message or message["role"] != "assistant":
+        raise HTTPException(404, "그 답을 찾지 못했어요.")
+    return message
+
+
 @app.post("/api/report")
 def report(req: ReportRequest, user: User = Depends(current_user)):
-    # 지금은 로그로만 남긴다. 관측 도구를 붙이면 그 도구의 점수로 보낸다.
+    # 신고는 Langfuse 점수 report(1)로 보내고, 사유는 comment 로 붙인다. 서버 로그에는 사유 길이만 남긴다.
+    message = own_answer(user, req.message_id)
+    tracing.score(message["meta"].get("trace_id"), "report", 1, comment=req.reason.strip()[:500] or None)
     log("WARNING", "부적절한 답변 신고", message_id=req.message_id, reason_length=len(req.reason))
+    return {"ok": True}
+
+
+@app.post("/api/feedback")
+def feedback(req: FeedbackRequest, user: User = Depends(current_user)):
+    # 좋아요 1, 별로예요 0 을 user-feedback 점수로. 별로예요가 붙은 트레이스부터 읽을 수 있게 한다.
+    message = own_answer(user, req.message_id)
+    tracing.score(message["meta"].get("trace_id"), "user-feedback", 1 if req.value == "up" else 0)
+    log("INFO", "답변 반응", message_id=req.message_id, value=req.value)
     return {"ok": True}
 
 
