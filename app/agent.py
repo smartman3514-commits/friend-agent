@@ -31,7 +31,11 @@ GREETING_GAP = timedelta(hours=6)  # 마지막 대화 뒤 이만큼 지나면 �
 
 def system_prompt(character, now, location, memories, summary, tool_lines=(), clarify=False):
     parts = [build_persona(character),
-             f"[지금] {when.label(now)} ({now.tzinfo}), 사용자 지역: {location}\n[달력]\n{when.calendar_hint(now)}"]
+             f"[지금] {when.label(now)} ({now.tzinfo}), 사용자 지역: {location}\n[달력]\n{when.calendar_hint(now)}",
+             # 11-02 staging(동료 트레이스): 기억에도 약속에도 없는 출장을 "내일 7시 출장 일정으로 확인되었습니다"라고 답했다.
+             "[확인한 척하지 않기]\n사용자의 일정·예약·약속을 '확인했다', '확인되었다', '저장돼 있다'고 말하려면 "
+             "아래 도구 결과나 기억 메모에 근거가 있어야 한다. 근거가 없으면 확인할 수 없다고 솔직히 말하고, "
+             "원하면 약속으로 저장해 알려 줄 수 있다고 묻는다. 사용자가 방금 말한 내용을 되풀이하는 것은 확인이 아니다."]
     block = memory.memory_block(memories, summary)
     if block:
         parts.append(block)

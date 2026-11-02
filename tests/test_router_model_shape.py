@@ -43,3 +43,21 @@ def test_holiday_question_with_a_month_keeps_the_range():
             "confidence": 0.9, "reason": "공휴일"}
     result = pick("12월에 공휴일 있어?", data)
     assert result.tools[0]["args"] == {"from": "2026-12-01", "to": "2026-12-31"}
+
+
+# 11-02 staging(동료 트레이스): "스케쥴 확인해줘"에 도구를 안 쓰고 "주말에 일정이 뭐있지"에 공휴일 도구를 골라,
+# 답이 저장된 적 없는 출장을 "확인되었습니다"라고 지어냈다.
+def test_schedule_check_looks_at_saved_reminders():
+    result = pick("내일 출장준비 됐나 스케쥴 확인해줘", {"tools": [], "confidence": 1, "reason": "일상 대화"})
+    assert [t["name"] for t in result.tools] == ["list_reminders"]
+    result = pick("주말에 일정이 뭐있지", {"tools": [{"name": "get_holidays", "args": {}}], "confidence": 0.9, "reason": "주말"})
+    assert [t["name"] for t in result.tools] == ["list_reminders"]
+
+
+def test_follow_up_check_after_a_schedule_question():
+    history = [{"role": "user", "content": "내일 출장 스케쥴 확인해줘"}, {"role": "assistant", "content": "저장된 약속이 없어요"}]
+    result = choose("아침인지 저녁인지 몰라도 7시야 확인해줘", history, when.now_in("Asia/Seoul"), "서울",
+                    Stub({"tools": [], "confidence": 1, "reason": "확인 요청"}))
+    assert [t["name"] for t in result.tools] == ["list_reminders"]
+    # 일정 이야기가 아니면 손대지 않는다
+    assert pick("일정조정이 필요해", {"tools": [], "confidence": 0.9, "reason": "대화"}).tools == []
