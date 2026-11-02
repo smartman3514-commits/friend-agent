@@ -85,6 +85,13 @@ def test_tracing_is_off_without_keys(monkeypatch):
     assert events[-1]["type"] == "done"
 
 
+def test_keys_are_cleaned_of_spaces_and_quotes(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", ' "sk-lf-abc"\n')
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "   ")
+    assert tracing._key("LANGFUSE_SECRET_KEY") == "sk-lf-abc"
+    assert tracing.enabled() is False  # 공백뿐인 키는 없는 것으로 본다
+
+
 def test_every_step_carries_user_session_version_and_tool_tag(spans, monkeypatch):
     monkeypatch.setenv("K_REVISION", "friend-agent-staging-00099-abc")
     run("내일 서울 날씨 어때?", MemoryStore())

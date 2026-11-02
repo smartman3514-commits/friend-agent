@@ -57,12 +57,21 @@ def lf():
             # 키가 없을 때 SDK가 남기는 인증 경고는 끈 상태에서는 의미가 없어 숨긴다
             logging.getLogger("langfuse").setLevel(logging.ERROR)
         # environment(local, staging, production)로 내 컴퓨터의 시험 기록과 배포한 서비스의 기록을 나눈다
-        _client = Langfuse(tracing_enabled=on, mask=mask, environment=os.getenv("ENV", "local").strip().lower())
+        _client = Langfuse(public_key=_key("LANGFUSE_PUBLIC_KEY") or None, secret_key=_key("LANGFUSE_SECRET_KEY") or None,
+                           tracing_enabled=on, mask=mask, environment=os.getenv("ENV", "local").strip().lower())
     return _client
 
 
+def _key(name):
+    """키 앞뒤의 공백, 줄바꿈, 따옴표를 지운다. .env 는 읽을 때 지워 주지만 Secret Manager 값은 넣은 그대로 들어온다.
+
+    (11-02 staging: 비밀값에 보이지 않는 글자가 섞여 Langfuse 가 401 로 거절했다)
+    """
+    return os.getenv(name, "").strip().strip("\"'").strip()
+
+
 def enabled():
-    return bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
+    return bool(_key("LANGFUSE_PUBLIC_KEY") and _key("LANGFUSE_SECRET_KEY"))
 
 
 def turn_attributes(uid, now):
