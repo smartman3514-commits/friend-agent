@@ -44,7 +44,9 @@ REQUEST_PATTERN = re.compile(r"알려\s*(줘|주|달)|알림|약속으로\s*저�
 # 바로 앞 답에서 캐릭터가 먼저 "알려 줄까?"라고 물었으면, "응"만 해도 부탁으로 본다
 OFFER_PATTERN = re.compile(r"알려\s*줄까|알림.*(할까|맞춰|설정)")
 CANCEL_WORDS = ["취소", "지워", "없던 걸로", "안 알려 줘도", "안 알려줘도"]
-LIST_PATTERN = re.compile(r"(약속|알림|리마인드).*(뭐|목록|있어|있지|있었|보여|확인)")
+# 11-02 staging(동료 트레이스): "스케쥴 확인해줘", "주말에 일정이 뭐있지"에 도구를 안 쓰거나 공휴일 도구를 골라,
+# 답이 저장된 적 없는 출장을 "확인되었습니다"라고 지어냈다. 일정·스케줄도 약속 목록으로 본다.
+LIST_PATTERN = re.compile(r"(약속|알림|리마인드|일정|스케[줄쥴]).*(뭐|목록|있어|있지|있었|보여|확인)")
 
 
 def router_prompt():
@@ -62,6 +64,7 @@ def router_prompt():
         "- location 은 메시지에 도시 이름이 있으면 그 도시, 없으면 사용자 지역이다.",
         "- date 는 [달력]을 보고 정한 YYYY-MM-DD 날짜다. 날짜 표현이 없으면 오늘이다.",
         "- create_reminder 는 사용자가 나중에 알려 달라고 분명히 부탁할 때만 고른다. 일정이 있다는 이야기만 하면 고르지 않는다.",
+        "- 사용자가 자기 일정·스케줄·약속을 확인하거나 무엇이 있는지 물으면 list_reminders 를 고른다(공휴일을 묻는 게 아니면 get_holidays 가 아니다).",
         "- create_reminder 의 text 는 알려 줄 내용만 짧게 쓴다. 예: '우산 챙기기', '일찍 자기'. 예시 문구나 메시지에 없는 일정을 약속으로 만들지 않는다.",
         "- create_reminder 의 due_at 은 [지금] 시각과 시간대를 기준으로 계산한다. 시각 없이 날짜만 있으면 09:00, 아침 08:00, 점심 12:00, 저녁 19:00, 밤 21:00 으로 한다.",
         "- create_reminder 의 날짜는 메시지에 적힌 날짜를 그대로 쓴다. 이미 지난 날짜여도 오늘이나 다른 날로 옮기지 않는다. 지난 시각은 코드가 거절하고 사용자에게 알린다.",
@@ -217,6 +220,16 @@ def model_choose(message, history, now, location, llm):
             tools = [t for t in tools if t not in unasked]
             guards.append("알려 달라는 부탁이 없어 약속을 저장하지 않았습니다: "
                           + ", ".join(f"'{t['args'].get('text')}'" for t in unasked))
+    # 안전장치: 자기 일정을 확인해 달라는데 약속 목록을 안 보면, 답이 근거 없이 "확인됐다"고 지어낸다.
+    # 약속 목록을 넣고, 공휴일 낱말이 없는데 고른 공휴일 도구는 뺀다.
+    # 바로 앞 질문이 일정 확인이었고 이번에도 "확인해줘"면 이어지는 확인으로 본다("7시야 확인해줘").
+    prev_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+    asks_schedule = LIST_PATTERN.search(message) or ("확인" in message and LIST_PATTERN.search(prev_user))
+    if asks_schedule and not any(k in message for k in KEYWORDS["get_holidays"]):
+        tools = [t for t in tools if t["name"] != "get_holidays"]
+    if asks_schedule and not any(t["name"] in ("list_reminders", "create_reminder", "cancel_reminder") for t in tools):
+        tools.insert(0, {"name": "list_reminders", "args": {}})
+        guards.append("일정 확인 질문이라 저장된 약속 목록을 함께 봅니다.")
     # 안전장치: 약속을 여러 개 고를 때 메시지에 없는 약속(지시문 예시 '우산 챙기기' 등)을 지어내 개수를 채우면 뺀다
     if sum(t["name"] == "create_reminder" for t in tools) > 1:
         made_up = [t for t in tools if t["name"] == "create_reminder" and invented(str(t["args"].get("text") or ""), message)]
