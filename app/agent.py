@@ -49,6 +49,18 @@ def system_prompt(character, now, location, memories, summary, tool_lines=(), cl
     return "\n\n".join(parts)
 
 
+def with_tool_note(message, tool_lines):
+    """이번 메시지 바로 뒤에 도구 결과를 한 번 더 붙인다(모델에게만 보내고 저장하지 않는다).
+
+    11-02 staging: "저장할 수 없어"라고 답한 기록이 최근 대화에 쌓이자, 약속이 실제로 저장됐는데도
+    답이 같은 거절을 되풀이했다. 지시문 맨 위의 [도구 결과]보다 가장 최근 메시지 옆에 둔 사실을 더 따른다.
+    """
+    if not tool_lines:
+        return message
+    return (f"{message}\n\n[이번 메시지의 도구 결과: 앞선 대화와 달라도 이것이 맞다. 이 표시는 사용자에게 보이지 않으니 "
+            f"그대로 옮겨 적지 말고 내용만 캐릭터 말투로 전한다]\n" + "\n".join(f"- {line}" for line in tool_lines))
+
+
 def run_turn(message, uid, llm, store, show_panel):
     turn = tracing.lf().start_observation(name="chat-turn", as_type="span", input=message)
     try:
@@ -135,7 +147,7 @@ def _turn(turn, message, uid, llm, store, show_panel):
     if show_panel:
         yield {"type": "context", "memories": [m["text"] for m in memories],
                "summary": summary["text"] if summary else None, "recent_messages": len(history)}
-    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": message}]
+    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": with_tool_note(message, lines)}]
     with tracing.inside(turn, attrs):  # 답은 조각마다 이어지므로 '지금 열린 관찰 단위'로 두지 않고 객체로 든다
         gen = turn.start_observation(name="reply", as_type="generation", model=model, input=messages)
     reply, usage = "", {}

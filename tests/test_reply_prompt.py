@@ -14,3 +14,11 @@ def test_tool_results_override_earlier_refusals():
 def test_no_tool_results_no_override_line():
     now = when.now_in("Asia/Seoul")
     assert "앞선 대화에서 알려줄 수 없다" not in system_prompt(DEFAULT_CHARACTER, now, "서울", [], None)
+
+
+def test_tool_results_are_repeated_next_to_the_message():
+    from app.agent import with_tool_note
+    assert with_tool_note("안녕", []) == "안녕"
+    note = with_tool_note("물 마시라고 알려 줘", ["약속을 저장했습니다: 11월 3일(화) 08:00에 '물 마시기'."])
+    assert note.startswith("물 마시라고 알려 줘\n\n[이번 메시지의 도구 결과")
+    assert "'물 마시기'" in note
