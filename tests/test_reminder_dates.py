@@ -150,3 +150,15 @@ def test_reminder_with_a_request_is_still_saved():
     day = (now + timedelta(days=12)).replace(hour=9, minute=0)
     chat_with([reminder("이사 준비", day)], f"{md(day)} 아침에 이사 준비 알려 줘")
     assert "이사 준비" in saved_texts()
+
+
+# 11-02 staging 트레이스에서 발견: "다음 주 토요일"을 이번 주 토요일로 저장했다.
+def test_next_week_weekday_is_fixed_to_the_real_date():
+    now = when.now_in("Asia/Seoul")
+    want = now + timedelta(days=when.day_offset("다음 주 토요일", now))
+    wrong = (want - timedelta(days=7)).replace(hour=9, minute=0)
+    events, _ = chat_with([reminder("다음주 이사 준비", wrong)], "다음 주 토요일 아침에 이사 준비 알려 줘")
+    turn = next(e for e in events if e["type"] == "turn")
+    assert any("'다음 주' 날짜를" in g for g in turn["guards"])
+    saved = next(r for r in client.get("/api/reminders").json() if r["text"] == "다음주 이사 준비")
+    assert saved["due_label"] == when.label(want.replace(hour=9, minute=0))

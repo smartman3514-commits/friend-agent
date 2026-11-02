@@ -114,6 +114,14 @@ def explicit_dates(message, now):
     return found
 
 
+def next_week_date(message, now):
+    """'다음 주 토요일'처럼 다음 주 요일이 하나만 적혀 있으면 그 날짜. 'M월 D일'이 함께 있거나 요일이 여러 개면 None."""
+    found = set(re.findall(r"다음\s*주\s*([월화수목금토일])요일", message))
+    if len(found) != 1 or explicit_dates(message, now):
+        return None
+    return (now + timedelta(days=when.day_offset(f"다음 주 {found.pop()}요일", now))).date()
+
+
 def due_date(value):
     try:
         return datetime.fromisoformat(str(value)).date()
@@ -199,6 +207,16 @@ def model_choose(message, history, now, location, llm):
                 t["args"][key], fixed = when.fix_year(t["args"][key], now)
                 if fixed:
                     result.guards.append(f"{t['name']} 의 {key} 연도가 지난 연도라 {now.year}년으로 고쳤습니다.")
+
+    # 안전장치: '다음 주 토요일'인데 모델이 이번 주 토요일로 잡으면 코드가 계산한 날짜로 고친다(시각은 그대로)
+    # (11-02 staging 트레이스: 달력에 다음 주가 11/9~15로 적혀 있는데도 11/7로 저장했다)
+    want = next_week_date(message, now)
+    for t in result.tools if want else []:
+        due = due_date(t["args"].get("due_at")) if t["name"] == "create_reminder" else None
+        if due and due != want:
+            fixed = datetime.fromisoformat(t["args"]["due_at"]).replace(year=want.year, month=want.month, day=want.day)
+            t["args"]["due_at"] = fixed.isoformat()
+            result.guards.append(f"'다음 주' 날짜를 {when.date_label(due)}로 잡아 {when.date_label(want)}로 고쳤습니다.")
 
     # 안전장치: 메시지에 적힌 날짜가 모두 지났는데 모델이 다른 날로 옮겨 약속을 잡으면 막는다
     # (지난 일정이 적힌 사진을 보내면 모델이 오늘 같은 시각으로 바꿔 저장하던 문제)
