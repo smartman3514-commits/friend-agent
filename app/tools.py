@@ -154,9 +154,10 @@ def get_holidays(args, ctx):
         end = date.fromisoformat(args.get("to") or (today + timedelta(days=365)).isoformat())
     except ValueError:
         start, end = today, today + timedelta(days=365)
-    found = []
+    found, every = [], []
     for year in range(start.year, end.year + 1):
-        found += [(d, n) for d, n in holidays_of(year) if start <= d <= end]
+        every += holidays_of(year)
+    found = [(d, n) for d, n in every if start <= d <= end]
     data = {"from": start.isoformat(), "to": end.isoformat(),
             "holidays": [{"date": d.isoformat(), "name": n} for d, n in found]}
     if not found:
@@ -174,7 +175,34 @@ def get_holidays(args, ctx):
         return ToolResult("get_holidays", True, f"{start}부터 {end}까지 공휴일이 없습니다.", data)
     listed = ", ".join(f"{when.date_label(d)} {n}" for d, n in found[:6])
     more = f" 외 {len(found) - 6}일" if len(found) > 6 else ""
-    return ToolResult("get_holidays", True, f"{start}~{end} 공휴일: {listed}{more}.", data)
+    blocks = long_weekends(found, {d for d, _ in every})
+    data["long_weekends"] = [{"from": a.isoformat(), "to": b.isoformat(), "days": n} for a, b, n in blocks]
+    extra = "".join(f" 연휴: {when.date_label(a)}부터 {when.date_label(b)}까지 {n}일." for a, b, n in blocks)
+    return ToolResult("get_holidays", True, f"{start}~{end} 공휴일: {listed}{more}.{extra}", data)
+
+
+def long_weekends(found, off_days):
+    """공휴일과 주말이 이어져 3일 이상 쉬는 구간 [(시작, 끝, 일수)].
+
+    모델은 "12/25(금)"을 받고도 3일 연휴라고 말하지 못했다(11-03 friend-reply R06: 규칙 없이 0/12,
+    지시문 규칙으로도 3번 중 1번은 "주말까지 쭉"). 계산은 도구가 하고 모델은 전하기만 한다.
+    """
+    def off(d):
+        return d.weekday() >= 5 or d in off_days
+
+    blocks, seen = [], set()
+    for d, _ in found:
+        if d in seen:
+            continue
+        a, b = d, d
+        while off(a - timedelta(days=1)):
+            a -= timedelta(days=1)
+        while off(b + timedelta(days=1)):
+            b += timedelta(days=1)
+        seen.update(a + timedelta(days=i) for i in range((b - a).days + 1))
+        if (b - a).days + 1 >= 3:
+            blocks.append((a, b, (b - a).days + 1))
+    return blocks
 
 
 # ── 약속 도구 ──────────────────────────────────────────────────────

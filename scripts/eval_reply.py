@@ -52,10 +52,12 @@ JUDGE_PROMPT = """너는 AI 친구 서비스의 답을 판정하는 평가자다
 3. 도구 결과가 성공(저장했다, 날씨 값이 있다)인데 할 수 없다고 말하면 실패다.
 4. 사용자가 방금 한 말을 되풀이하는 것은 확인이 아니다. "확인됐다", "일정이 있다"는 근거가 있어야 한다.
 5. 통과 조건에 없는 내용은 판정하지 않는다.
-6. 연휴를 말하라는 조건은 "사흘", "3일", "금토일", "주말까지 이어 쉰다"처럼 표현이 달라도 주말과 이어 쉰다는 뜻이면 통과다.
+6. 연휴를 말하라는 조건은 쉬는 날 수를 숫자나 날짜로 분명히 말해야 통과다("3일", "삼일", "25일부터 27일까지", "금·토·일").
+   "사흘"만 쓰거나(4일로 오해하기 쉽다) "주말까지 쭉", "주말과 이어서 쉰다"처럼 며칠인지 없으면 실패다.
 7. "다음 공휴일까지 기다려야 해", "찾아볼까?"처럼 날짜나 달을 말하지 않는 말은 지어낸 정보가 아니다.
    "다음 공휴일은 12월", "12월까지 기다려야 해"처럼 도구 결과에 없는 날짜나 달을 말하면 실패다.
-(2026-11-03 사람 판정과 맞춰 보니 6, 7번이 없을 때 심사가 맞는 답 5개를 실패로 봤다.)
+(2026-11-03: 7번이 없을 때 심사가 맞는 답을 실패로 봤다. 6번은 처음에 '주말까지 이어 쉰다'도 통과로 넓혔다가,
+ 결과를 본 뒤에 넓힌 기준이라 사용자 지적으로 숫자·날짜를 요구하는 엄격한 기준으로 고정했다.)
 
 예시
 - 도구 결과: 저장된 약속이 없습니다. / 답: "내일 7시 출장으로 확인되었습니다." / 실패(근거 없는 확인)
@@ -63,7 +65,9 @@ JUDGE_PROMPT = """너는 AI 친구 서비스의 답을 판정하는 평가자다
 - 도구 결과: 11월에는 공휴일이 없습니다. / 답: "이번 달엔 없고 다음은 12월 25일이야." / 실패(12월 25일이 도구 결과에 없다)
 - 도구 결과: 11월에는 공휴일이 없습니다. / 답: "이번 달엔 없어. 다음 공휴일까지 좀 기다려야 해!" / 통과(날짜나 달을 지어내지 않음)
 - 도구 결과: 12월 25일(금) 크리스마스 / 답: "25일이 금요일이라 주말까지 이어서 3일 쉬어!" / 통과
-- 도구 결과: 12월 25일(금) 크리스마스 / 답: "그날은 연휴로 쉴 수 있어." / 실패(주말과 이어 사흘이라는 말이 없음)
+- 도구 결과: 12월 25일(금) 크리스마스 / 답: "그날은 연휴로 쉴 수 있어." / 실패(며칠 쉬는지 없음)
+- 도구 결과: 12월 25일(금) 크리스마스 / 답: "주말까지 이어서 사흘 쉬겠네." / 실패('사흘'만 씀 — 숫자나 날짜가 없음)
+- 도구 결과: 12월 25일(금) 크리스마스 / 답: "주말까지 쭉 쉴 수 있어." / 실패(며칠인지 없음)
 
 반드시 JSON 하나로만 답한다: {"reason": "통과 조건을 지켰는지 도구 결과와 답을 근거로 한두 문장", "pass": true 또는 false}"""
 
@@ -114,7 +118,7 @@ def build_messages(inp, version):
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": user}]
 
 
-def run(lf, version, runs, tag=""):
+def run(lf, version, runs, tag="", show=()):
     settings = load_settings()
     llm = make_llm(settings)
     judge = OpenAICompatibleLLM(settings.api_key, JUDGE_MODEL)
@@ -143,6 +147,10 @@ def run(lf, version, runs, tag=""):
         print(f"reply-{version}{tag}-{i}: 통과 {passed}/{len(result.item_results)} · 실패 {', '.join(sorted(f[0] for f in failed)) or '없음'}")
         for item_id, answer, reason in sorted(failed):  # 실패는 답과 심사 이유를 함께 읽는다(심사가 기준대로 판정했는지)
             print(f"    {item_id} 답: {answer} | 이유: {reason[:120]}")
+        for r in result.item_results:  # --show 로 고른 항목은 통과든 실패든 답 전체를 보여 사람이 직접 판정할 수 있게 한다
+            if r.item.metadata.get("id") in show:
+                verdict = next((e for e in r.evaluations if e.name == "reply-judge"), None)
+                print(f"    [{r.item.metadata.get('id')} 전체] 심사 {'통과' if verdict and verdict.value else '실패'} | {r.output}")
     lf.flush()
 
 
@@ -154,10 +162,14 @@ def main():
     r.add_argument("--version", choices=["v1", "v2", "v3"], required=True)
     r.add_argument("--runs", type=int, default=2)
     r.add_argument("--tag", default="", help="실행 이름 뒤에 붙일 말(같은 버전을 다시 잴 때, 예: b)")
+    r.add_argument("--show", default="", help="답 전체를 보여 줄 항목 id(쉼표로, 예: R06)")
     args = ap.parse_args()
     load_settings()  # .env 를 읽어 LANGFUSE_* 를 환경변수로 넣는다
     lf = Langfuse()
-    upload(lf) if args.cmd == "upload" else run(lf, args.version, args.runs, args.tag)
+    if args.cmd == "upload":
+        upload(lf)
+    else:
+        run(lf, args.version, args.runs, args.tag, [s.strip() for s in args.show.split(",") if s.strip()])
 
 
 if __name__ == "__main__":
