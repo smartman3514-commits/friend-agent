@@ -96,7 +96,9 @@ jobs:
           exit 1
 
       # 5. 카나리: 지금 트래픽을 받는 리비전(롤백할 곳)과 새 리비전 이름을 남기고, 새 리비전에 10% → 50% 를 보낸다.
-      #    단계마다 2분 동안 scripts/canary_check.py 가 서비스 주소로 직접 요청을 보내 실패율과 느린 쪽 응답 시간(p95)을 잰다.
+      #    단계마다 2분 동안 scripts/canary_check.py 가 서비스 주소로 직접 요청을 보내 트래픽을 만들고,
+      #    Cloud Run 요청 기록(서버 쪽)으로 새 리비전의 오류율과 느린 쪽 응답 시간(p95)을 잰다(배포 계정에 roles/logging.viewer).
+      #    러너 쪽 시간초과로 네 번 가짜 롤백한 뒤(2026-11-02·03) 판정을 서버 기록으로 옮겼다. 기록을 못 읽으면 러너 측정으로 판단한다.
       #    기준을 넘으면 이전 리비전으로 100% 되돌리고 워크플로를 실패로 끝낸다(전환 단계로 가지 않음).
       - name: 카나리 10% → 50% (자동 판단)
         run: |
@@ -109,7 +111,8 @@ jobs:
           for P in 10 50; do
             gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$NEW=$P,$OLD=$((100 - P))"
             echo "#### 새 리비전 $P%" >> "$GITHUB_STEP_SUMMARY"
-            if ! python3 scripts/canary_check.py "$URL" "$NEW" "$OLD" --seconds 120; then
+            if ! python3 scripts/canary_check.py "$URL" "$NEW" "$OLD" --seconds 120 \
+                 --service "${{ vars.SERVICE }}" --project "${{ vars.GCP_PROJECT_ID }}"; then
               echo "기준을 넘어 이전 리비전 $OLD 로 되돌린다"
               gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$OLD=100"
               echo "**롤백: $P% 단계에서 기준을 넘어 \`$OLD\` 로 100% 되돌림**" >> "$GITHUB_STEP_SUMMARY"
