@@ -183,3 +183,18 @@ def test_ambiguous_day_words_are_left_alone():
     assert spoken_date("운동", "오늘 말고 내일 운동하라고 알려 줘", now) is None
     assert spoken_date("운동", "11월 20일 운동하라고 알려 줘", now) is None
     assert spoken_date("운동", "모레 운동하라고 알려 줘", now)[1] == (now + timedelta(days=2)).date()
+
+
+# 11-02 staging(동료 트레이스): 기억의 '11월 14일(토) 이사'를 두고 "이번 주 토요일인 11월 14일"이라고 답했다.
+def test_dated_memories_carry_where_they_fall_from_today():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.memory import memory_block
+    now = datetime(2026, 11, 2, 17, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # 월요일
+    block = memory_block([{"text": "11월 14일(토) 이사"}, {"text": "11월 7일(토) 결혼식"},
+                          {"text": "11월 3일(화) 출장"}, {"text": "고양이를 좋아함"}], None, now)
+    assert "11월 14일(토) 이사 (지금 기준: 다음 주 토요일, 12일 뒤)" in block
+    assert "11월 7일(토) 결혼식 (지금 기준: 이번 주 토요일, 5일 뒤)" in block
+    assert "11월 3일(화) 출장 (지금 기준: 내일)" in block
+    assert "- 고양이를 좋아함\n" in block + "\n"
+    assert when.relative_label(datetime(2026, 10, 30).date(), now.date()) == "이미 지난 날"
