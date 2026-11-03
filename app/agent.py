@@ -36,7 +36,7 @@ def system_prompt(character, now, location, memories, summary, tool_lines=(), cl
              "[확인한 척하지 않기]\n사용자의 일정·예약·약속을 '확인했다', '확인되었다', '저장돼 있다'고 말하려면 "
              "아래 도구 결과나 기억 메모에 근거가 있어야 한다. 근거가 없으면 확인할 수 없다고 솔직히 말하고, "
              "원하면 약속으로 저장해 알려 줄 수 있다고 묻는다. 사용자가 방금 말한 내용을 되풀이하는 것은 확인이 아니다."]
-    block = memory.memory_block(memories, summary)
+    block = memory.memory_block(memories, summary, now)
     if block:
         parts.append(block)
     if tool_lines:
@@ -178,13 +178,16 @@ def _turn(turn, message, uid, llm, store, show_panel):
         step.update(metadata=saved_texts)  # 모델의 답(output)과 실제로 저장된 것(metadata)을 나란히 본다
         if not getattr(llm, "can_reason", False):
             step.update(output=saved_texts)
-    with tracing.inside(turn, attrs):
-        memory.maybe_summarize(store, uid, llm)
     turn.update(output=reply, metadata={"message_id": saved["id"], "tools": [t["name"] for t in choice.tools],
                                         "confidence": choice.confidence, "safety": False})
     yield {"type": "memory", "added": [m["text"] for m in changes["added"]],
            "updated": [m["text"] for m in changes["updated"]], "removed": [m["text"] for m in changes["removed"]]}
     yield {"type": "done", "message_id": saved["id"]}
+    # 대화 요약은 '끝' 신호를 보낸 뒤에 한다. 화면은 done 을 받으면 바로 다음 메시지를 받는다.
+    # (11-02 동료 트레이스: 요약 2.48초가 끼어 그 턴이 8.21초, 그동안 보내기 버튼이 꺼져 있었다)
+    # 요청은 아직 열려 있어 Cloud Run 이 CPU 를 그대로 준다(응답을 닫은 뒤 백그라운드로 돌리면 CPU 가 거의 없다).
+    with tracing.inside(turn, attrs):
+        memory.maybe_summarize(store, uid, llm)
 
 
 def greet(uid, llm, store):

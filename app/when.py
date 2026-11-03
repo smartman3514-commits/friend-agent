@@ -25,6 +25,18 @@ def date_label(d):
     return f"{d.month}월 {d.day}일({WEEKDAYS[d.weekday()]})"
 
 
+def relative_label(d, today):
+    """날짜 d 가 today 기준으로 언제인지: '오늘', '내일', '이번 주 토요일, 5일 뒤', '다음 주 토요일, 12일 뒤', '지난 날'."""
+    gap = (d - today).days
+    if gap < 0:
+        return "이미 지난 날"
+    if gap <= 2:
+        return ("오늘", "내일", "모레")[gap]
+    week = (d - (today - timedelta(days=today.weekday()))).days // 7
+    name = {0: "이번 주 ", 1: "다음 주 "}.get(week, "")
+    return f"{name}{WEEKDAYS[d.weekday()]}요일, {gap}일 뒤" if name else f"{gap}일 뒤"
+
+
 def calendar_hint(now, days=14):
     """모델은 요일 계산을 자주 틀린다. 앞으로 2주의 날짜와 요일을 표로 넣어 준다."""
     monday = now.date() - timedelta(days=now.weekday())

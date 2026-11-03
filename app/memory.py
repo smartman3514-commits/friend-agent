@@ -5,6 +5,7 @@
 - 기억 메모: 매 턴 끝에 기억할 사실을 뽑아 추가, 수정, 삭제한다. 사용자가 화면에서 보고 지울 수 있다.
 """
 import re
+from datetime import date
 
 from app import tracing, when
 from app.logs import log
@@ -55,10 +56,28 @@ def build_context(store, uid):
     return memories, summary, recent
 
 
-def memory_block(memories, summary):
+def with_when(text, now):
+    """기억 글에 'M월 D일'이 있으면 지금 기준으로 언제인지 붙인다. 모델이 '이번 주'·'다음 주'를 자주 틀린다.
+
+    (11-02 동료 트레이스: 기억의 '11월 14일(토) 이사'를 두고 "이번 주 토요일인 11월 14일"이라고 답했다)
+    """
+    m = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", text)
+    if not now or not m:
+        return text
+    try:
+        d = date(now.year, int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return text
+    if (now.date() - d).days > 180:  # 12월에 적어 둔 '1월 5일'은 내년
+        d = d.replace(year=now.year + 1)
+    return f"{text} (지금 기준: {when.relative_label(d, now.date())})"
+
+
+def memory_block(memories, summary, now=None):
     parts = []
     if memories:
-        parts.append("[기억 메모: 사용자에 대해 알고 있는 것]\n" + "\n".join(f"- {m['text']}" for m in memories))
+        parts.append("[기억 메모: 사용자에 대해 알고 있는 것. 괄호 안 '지금 기준'은 코드가 계산한 것이니 날짜를 말할 때 그대로 따른다]\n"
+                     + "\n".join(f"- {with_when(m['text'], now)}" for m in memories))
     if summary:
         parts.append(f"[이전 대화 요약]\n{summary['text']}")
     return "\n\n".join(parts)

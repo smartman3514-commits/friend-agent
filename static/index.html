@@ -497,7 +497,10 @@ async function send(text) {
           panel?.memory(e);
           refreshCount();
         }
-        else if (e.type === "done") { finished = true; bubble.textContent = reply || bubble.textContent; bindReport(row, e.message_id); }
+        else if (e.type === "done") {
+          finished = true; bubble.textContent = reply || bubble.textContent; bindReport(row, e.message_id);
+          busy = false; $("#send").disabled = false;  // 서버는 done 뒤에 대화 요약을 이어서 하므로, 다음 메시지는 지금부터 받는다
+        }
         else if (e.type === "error") { finished = true; bubble.textContent = e.message; }
       }
     }
