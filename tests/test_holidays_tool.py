@@ -29,3 +29,24 @@ def test_next_holiday_lookup_failure_keeps_the_range_answer(monkeypatch):
     monkeypatch.setattr(tools, "holidays_of", holidays_of)
     r = get_holidays({"from": "2026-12-26", "to": "2026-12-31"}, ctx())
     assert r.ok and r.summary == "2026-12-26부터 2026-12-31까지 공휴일이 없습니다."
+
+
+def test_friday_holiday_is_reported_as_a_three_day_weekend(monkeypatch):
+    monkeypatch.setattr(tools, "holidays_of", lambda year: FAKE.get(year, []))
+    r = get_holidays({"from": "2026-12-01", "to": "2026-12-31"}, ctx())
+    assert "연휴: 12월 25일(금)부터 12월 27일(일)까지 3일." in r.summary
+    assert r.data["long_weekends"] == [{"from": "2026-12-25", "to": "2026-12-27", "days": 3}]
+
+
+def test_midweek_holiday_is_not_a_long_weekend(monkeypatch):
+    monkeypatch.setattr(tools, "holidays_of", lambda year: {2026: [(date(2026, 10, 7), "평일 공휴일")]}.get(year, []))
+    r = get_holidays({"from": "2026-10-01", "to": "2026-10-31"}, ctx())
+    assert "연휴" not in r.summary and r.data["long_weekends"] == []
+
+
+def test_back_to_back_holidays_join_the_weekend(monkeypatch):
+    # 2026 추석처럼 공휴일이 붙어 있고 주말과 이어지면 한 덩어리로 센다(9/24 목 ~ 9/27 일)
+    days = [(date(2026, 9, 24), "추석 연휴"), (date(2026, 9, 25), "추석"), (date(2026, 9, 26), "추석 연휴")]
+    monkeypatch.setattr(tools, "holidays_of", lambda year: {2026: days}.get(year, []))
+    r = get_holidays({"from": "2026-09-01", "to": "2026-09-30"}, ctx())
+    assert r.data["long_weekends"] == [{"from": "2026-09-24", "to": "2026-09-27", "days": 4}]
