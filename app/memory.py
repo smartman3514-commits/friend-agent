@@ -5,8 +5,9 @@
 - 기억 메모: 매 턴 끝에 기억할 사실을 뽑아 추가, 수정, 삭제한다. 사용자가 화면에서 보고 지울 수 있다.
 """
 import re
+from datetime import date
 
-from app import when
+from app import tracing, when
 from app.logs import log
 from app.safety import is_sensitive
 
@@ -55,10 +56,28 @@ def build_context(store, uid):
     return memories, summary, recent
 
 
-def memory_block(memories, summary):
+def with_when(text, now):
+    """기억 글에 'M월 D일'이 있으면 지금 기준으로 언제인지 붙인다. 모델이 '이번 주'·'다음 주'를 자주 틀린다.
+
+    (11-02 동료 트레이스: 기억의 '11월 14일(토) 이사'를 두고 "이번 주 토요일인 11월 14일"이라고 답했다)
+    """
+    m = re.search(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", text)
+    if not now or not m:
+        return text
+    try:
+        d = date(now.year, int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return text
+    if (now.date() - d).days > 180:  # 12월에 적어 둔 '1월 5일'은 내년
+        d = d.replace(year=now.year + 1)
+    return f"{text} (지금 기준: {when.relative_label(d, now.date())})"
+
+
+def memory_block(memories, summary, now=None):
     parts = []
     if memories:
-        parts.append("[기억 메모: 사용자에 대해 알고 있는 것]\n" + "\n".join(f"- {m['text']}" for m in memories))
+        parts.append("[기억 메모: 사용자에 대해 알고 있는 것. 괄호 안 '지금 기준'은 코드가 계산한 것이니 날짜를 말할 때 그대로 따른다]\n"
+                     + "\n".join(f"- {with_when(m['text'], now)}" for m in memories))
     if summary:
         parts.append(f"[이전 대화 요약]\n{summary['text']}")
     return "\n\n".join(parts)
@@ -113,7 +132,10 @@ def update_memories(store, uid, user_message, reply, now, llm):
 
 
 def maybe_summarize(store, uid, llm):
-    """요약되지 않은 메시지가 많으면 앞쪽을 요약에 합친다. 요약했으면 True."""
+    """요약되지 않은 메시지가 많으면 앞쪽을 요약에 합친다. 요약했으면 True.
+
+    모델로 요약할 때만 Langfuse 에 memory-summary(generation)를 남긴다(지금 열린 트레이스 아래에).
+    """
     summary = store.get_summary(uid)
     pending = store.messages_after(uid, summary["covers_until"] if summary else 0)
     if len(pending) <= SUMMARIZE_AFTER:
@@ -122,8 +144,11 @@ def maybe_summarize(store, uid, llm):
     talk = "\n".join(f"{m['role']}: {m['content']}" for m in batch)
     previous = f"[기존 요약]\n{summary['text']}\n\n" if summary else ""
     if getattr(llm, "can_reason", False):
-        text = llm.complete_text([{"role": "system", "content": SUMMARY_PROMPT},
-                                  {"role": "user", "content": f"{previous}[대화]\n{talk}"}])
+        with tracing.lf().start_as_current_observation(name="memory-summary", as_type="generation",
+                                                       model=getattr(llm, "model", None),
+                                                       metadata={"merged_messages": len(batch)}):
+            text = llm.complete_text([{"role": "system", "content": SUMMARY_PROMPT},
+                                      {"role": "user", "content": f"{previous}[대화]\n{talk}"}])
     else:
         text = ((summary["text"] + " ") if summary else "") + f"메시지 {len(batch)}개를 주고받았다."
     store.save_summary(uid, text[:2000], batch[-1]["id"])

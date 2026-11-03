@@ -38,8 +38,15 @@ KEYWORDS = {
 }
 # "토요일 날씨 알려 줘"는 약속이 아니다. 약속은 "~라고 알려 줘", "잊지 않게", "리마인드"처럼 부탁하는 말이 있어야 한다.
 ASK_PATTERN = re.compile(r"(라고|으라고|하라고)\s*(꼭\s*)?(알려|말해)|잊지 않게|리마인드|깨워")
+# 모델이 고른 약속을 남길지 볼 때 쓰는 더 넓은 부탁 표현. "11월 14일에 이사 가"처럼 일정 이야기만 하면 약속이 아니다.
+# (11-02 staging 트레이스: 이사 이야기만 했는데 모델이 확신도 1로 약속을 저장하고, 다음 메시지에서 또 저장했다)
+REQUEST_PATTERN = re.compile(r"알려\s*(줘|주|달)|알림|약속으로\s*저장|잊지|리마인|깨워|챙겨\s*(줘|주)|말해\s*(줘|주)")
+# 바로 앞 답에서 캐릭터가 먼저 "알려 줄까?"라고 물었으면, "응"만 해도 부탁으로 본다
+OFFER_PATTERN = re.compile(r"알려\s*줄까|알림.*(할까|맞춰|설정)")
 CANCEL_WORDS = ["취소", "지워", "없던 걸로", "안 알려 줘도", "안 알려줘도"]
-LIST_PATTERN = re.compile(r"(약속|알림|리마인드).*(뭐|목록|있어|있지|있었|보여|확인)")
+# 11-02 staging(동료 트레이스): "스케쥴 확인해줘", "주말에 일정이 뭐있지"에 도구를 안 쓰거나 공휴일 도구를 골라,
+# 답이 저장된 적 없는 출장을 "확인되었습니다"라고 지어냈다. 일정·스케줄도 약속 목록으로 본다.
+LIST_PATTERN = re.compile(r"(약속|알림|리마인드|일정|스케[줄쥴]).*(뭐|목록|있어|있지|있었|보여|확인)")
 
 
 def router_prompt():
@@ -57,6 +64,7 @@ def router_prompt():
         "- location 은 메시지에 도시 이름이 있으면 그 도시, 없으면 사용자 지역이다.",
         "- date 는 [달력]을 보고 정한 YYYY-MM-DD 날짜다. 날짜 표현이 없으면 오늘이다.",
         "- create_reminder 는 사용자가 나중에 알려 달라고 분명히 부탁할 때만 고른다. 일정이 있다는 이야기만 하면 고르지 않는다.",
+        "- 사용자가 자기 일정·스케줄·약속을 확인하거나 무엇이 있는지 물으면 list_reminders 를 고른다(공휴일을 묻는 게 아니면 get_holidays 가 아니다).",
         "- create_reminder 의 text 는 알려 줄 내용만 짧게 쓴다. 예: '우산 챙기기', '일찍 자기'. 예시 문구나 메시지에 없는 일정을 약속으로 만들지 않는다.",
         "- create_reminder 의 due_at 은 [지금] 시각과 시간대를 기준으로 계산한다. 시각 없이 날짜만 있으면 09:00, 아침 08:00, 점심 12:00, 저녁 19:00, 밤 21:00 으로 한다.",
         "- create_reminder 의 날짜는 메시지에 적힌 날짜를 그대로 쓴다. 이미 지난 날짜여도 오늘이나 다른 날로 옮기지 않는다. 지난 시각은 코드가 거절하고 사용자에게 알린다.",
@@ -109,6 +117,30 @@ def explicit_dates(message, now):
     return found
 
 
+def spoken_date(text, message, now):
+    """약속 글(text)이 나온 메시지 조각의 '내일', '모레', '목요일', '다음 주 토요일'을 날짜로 바꾼다. (표현, 날짜) 또는 None.
+
+    약속을 여러 개 부탁하면 쉼표나 '그리고'로 조각을 나눠 약속 글의 낱말이 든 조각에서만 찾는다.
+    'M월 D일'이 적혀 있거나, 한 조각에 날짜 표현이 둘 이상이거나("오늘 말고 내일"), 요일만 말했는데 그날이 오늘이면
+    어느 날인지 코드가 단정할 수 없어 None.
+    """
+    if explicit_dates(message, now):
+        return None
+    parts = [p for p in re.split(r",|\s그리고\s", message) if p.strip()]
+    if len(parts) > 1:
+        words = [w for w in re.findall(r"[가-힣A-Za-z0-9]+", text) if len(w) >= 2]
+        parts = [p for p in parts if any(w in p or w[:2] in p for w in words)]
+    if len(parts) != 1:
+        return None
+    hits = [w for w in when.DAY_WORDS if w in parts[0]] + re.findall(r"(?:다음\s*주\s*)?[월화수목금토일]요일", parts[0])
+    if len(hits) != 1:
+        return None
+    offset = when.day_offset(hits[0], now)
+    if offset is None or (offset == 0 and hits[0] not in when.DAY_WORDS):
+        return None
+    return hits[0], (now + timedelta(days=offset)).date()
+
+
 def due_date(value):
     try:
         return datetime.fromisoformat(str(value)).date()
@@ -157,17 +189,47 @@ def model_choose(message, history, now, location, llm):
     user = (f"[지금] {now.isoformat()} ({when.WEEKDAYS[now.weekday()]}요일)\n[달력]\n{when.calendar_hint(now)}\n"
             f"[사용자 지역] {location}\n[최근 대화]\n{recent}\n\n[메시지]\n{message}")
     data = llm.complete_json(router_prompt(), user)
+    guards = []
+    # 안전장치: 도구를 2개 이상 고를 때 모델이 confidence, reason 을 tools 목록 안 항목으로 넣는 일이 있다.
+    # 그대로 두면 확신도가 0으로 읽혀 되묻기로 빠지고 도구를 하나도 쓰지 않는다(11-02 staging 트레이스).
+    for t in data.get("tools") or []:
+        if isinstance(t, dict) and "name" not in t and "confidence" in t and "confidence" not in data:
+            data["confidence"] = t["confidence"]
+            data.setdefault("reason", t.get("reason", ""))
+            guards.append("모델이 확신도를 도구 목록 안에 적어 꺼내 썼습니다.")
+    # "다음 공휴일"처럼 기간을 말하지 않으면 앞으로 1년에서 찾는다. 모델은 이번 달로 좁혀 '없음'을 받곤 했다.
+    open_holidays = not re.search(r"\d{1,2}\s*월|이번\s*달|다음\s*달|올해|내년", message)
     tools, seen = [], set()
     for t in data.get("tools") or []:
         if isinstance(t, dict) and t.get("name") in TOOLS:
             args = t.get("args") if isinstance(t.get("args"), dict) else {}
+            if t["name"] == "get_holidays" and open_holidays and args:
+                args = {}
+                guards.append("기간을 말하지 않은 공휴일 질문이라 앞으로 1년에서 찾습니다.")
             key = (t["name"], json.dumps(args, sort_keys=True, ensure_ascii=False))
             if key in seen:  # 모델이 같은 약속을 두 번 고르면 두 번 저장된다
                 continue
             seen.add(key)
             tools.append({"name": t["name"], "args": args})
     confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
-    guards = []
+    # 안전장치: 알려 달라는 부탁이 없는데 고른 약속은 뺀다(프롬프트로만 막으면 모델이 일정 이야기를 약속으로 저장한다)
+    last_answer = next((m["content"] for m in reversed(history) if m["role"] == "assistant"), "")
+    if not REQUEST_PATTERN.search(message) and not OFFER_PATTERN.search(last_answer):
+        unasked = [t for t in tools if t["name"] == "create_reminder"]
+        if unasked:
+            tools = [t for t in tools if t not in unasked]
+            guards.append("알려 달라는 부탁이 없어 약속을 저장하지 않았습니다: "
+                          + ", ".join(f"'{t['args'].get('text')}'" for t in unasked))
+    # 안전장치: 자기 일정을 확인해 달라는데 약속 목록을 안 보면, 답이 근거 없이 "확인됐다"고 지어낸다.
+    # 약속 목록을 넣고, 공휴일 낱말이 없는데 고른 공휴일 도구는 뺀다.
+    # 바로 앞 질문이 일정 확인이었고 이번에도 "확인해줘"면 이어지는 확인으로 본다("7시야 확인해줘").
+    prev_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+    asks_schedule = LIST_PATTERN.search(message) or ("확인" in message and LIST_PATTERN.search(prev_user))
+    if asks_schedule and not any(k in message for k in KEYWORDS["get_holidays"]):
+        tools = [t for t in tools if t["name"] != "get_holidays"]
+    if asks_schedule and not any(t["name"] in ("list_reminders", "create_reminder", "cancel_reminder") for t in tools):
+        tools.insert(0, {"name": "list_reminders", "args": {}})
+        guards.append("일정 확인 질문이라 저장된 약속 목록을 함께 봅니다.")
     # 안전장치: 약속을 여러 개 고를 때 메시지에 없는 약속(지시문 예시 '우산 챙기기' 등)을 지어내 개수를 채우면 뺀다
     if sum(t["name"] == "create_reminder" for t in tools) > 1:
         made_up = [t for t in tools if t["name"] == "create_reminder" and invented(str(t["args"].get("text") or ""), message)]
@@ -186,6 +248,17 @@ def model_choose(message, history, now, location, llm):
                 t["args"][key], fixed = when.fix_year(t["args"][key], now)
                 if fixed:
                     result.guards.append(f"{t['name']} 의 {key} 연도가 지난 연도라 {now.year}년으로 고쳤습니다.")
+
+    # 안전장치: '내일', '목요일', '다음 주 토요일'을 모델이 다른 날로 잡으면 코드가 계산한 날짜로 고친다(시각은 그대로)
+    # (11-02 staging 트레이스: '다음 주 토요일'을 이번 주 11/7로, '내일 저녁 9시'를 오늘 11/2로 저장했다)
+    for t in result.tools:
+        due = due_date(t["args"].get("due_at")) if t["name"] == "create_reminder" else None
+        spoken = due and spoken_date(str(t["args"].get("text") or ""), message, now)
+        if spoken and due != spoken[1]:
+            word, want = spoken
+            fixed = datetime.fromisoformat(t["args"]["due_at"]).replace(year=want.year, month=want.month, day=want.day)
+            t["args"]["due_at"] = fixed.isoformat()
+            result.guards.append(f"'{word}' 날짜를 {when.date_label(due)}로 잡아 {when.date_label(want)}로 고쳤습니다.")
 
     # 안전장치: 메시지에 적힌 날짜가 모두 지났는데 모델이 다른 날로 옮겨 약속을 잡으면 막는다
     # (지난 일정이 적힌 사진을 보내면 모델이 오늘 같은 시각으로 바꿔 저장하던 문제)

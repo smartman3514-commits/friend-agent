@@ -132,3 +132,69 @@ def test_day_before_reminder_for_future_date_is_allowed():
     events, _ = chat_with([reminder("모임 하루 전 준비", day_before)], f"{md(event)} 모임 하루 전에 알려 줘")
     assert next(e for e in events if e["type"] == "tool")["ok"] is True
     assert "모임 하루 전 준비" in saved_texts()
+
+
+# 11-02 staging 트레이스에서 발견: "이사 간다"는 이야기만 했는데 모델이 약속을 저장했다.
+def test_reminder_without_a_request_is_not_saved():
+    now = when.now_in("Asia/Seoul")
+    day = (now + timedelta(days=12)).replace(hour=9, minute=0)
+    events, _ = chat_with([reminder("이사", day)], f"나 {md(day)}에 이사 가")
+    turn = next(e for e in events if e["type"] == "turn")
+    assert turn["tools"] == []
+    assert any("알려 달라는 부탁이 없어" in g for g in turn["guards"])
+    assert "이사" not in saved_texts()
+
+
+def test_reminder_with_a_request_is_still_saved():
+    now = when.now_in("Asia/Seoul")
+    day = (now + timedelta(days=12)).replace(hour=9, minute=0)
+    chat_with([reminder("이사 준비", day)], f"{md(day)} 아침에 이사 준비 알려 줘")
+    assert "이사 준비" in saved_texts()
+
+
+# 11-02 staging 트레이스에서 발견: "다음 주 토요일"을 이번 주 토요일로 저장했다.
+def test_next_week_weekday_is_fixed_to_the_real_date():
+    now = when.now_in("Asia/Seoul")
+    want = now + timedelta(days=when.day_offset("다음 주 토요일", now))
+    wrong = (want - timedelta(days=7)).replace(hour=9, minute=0)
+    events, _ = chat_with([reminder("다음주 이사 준비", wrong)], "다음 주 토요일 아침에 이사 준비 알려 줘")
+    turn = next(e for e in events if e["type"] == "turn")
+    assert any("'다음 주 토요일' 날짜를" in g for g in turn["guards"])
+    saved = next(r for r in client.get("/api/reminders").json() if r["text"] == "다음주 이사 준비")
+    assert saved["due_label"] == when.label(want.replace(hour=9, minute=0))
+
+
+# 11-02 staging 트레이스에서 발견: 약속 두 개 중 "내일 저녁 9시"를 오늘 날짜로 저장했다(목요일은 맞음).
+def test_tomorrow_in_a_two_reminder_message_is_fixed():
+    now = when.now_in("Asia/Seoul")
+    tomorrow = (now + timedelta(days=1)).replace(hour=21, minute=0)
+    thursday = now + timedelta(days=when.day_offset("목요일", now))
+    tools = [reminder("내일 스트레칭", tomorrow - timedelta(days=1)), reminder("목요일 산책", thursday.replace(hour=7, minute=0))]
+    events, _ = chat_with(tools, "내일 저녁 9시에 스트레칭하라고 알려 주고, 목요일 아침 7시에 산책하라고 알려 줘")
+    turn = next(e for e in events if e["type"] == "turn")
+    assert any("'내일' 날짜를" in g for g in turn["guards"])
+    saved = {r["text"]: r["due_label"] for r in client.get("/api/reminders").json()}
+    assert saved["내일 스트레칭"] == when.label(tomorrow)
+
+
+def test_ambiguous_day_words_are_left_alone():
+    from app.router import spoken_date
+    now = when.now_in("Asia/Seoul")
+    assert spoken_date("운동", "오늘 말고 내일 운동하라고 알려 줘", now) is None
+    assert spoken_date("운동", "11월 20일 운동하라고 알려 줘", now) is None
+    assert spoken_date("운동", "모레 운동하라고 알려 줘", now)[1] == (now + timedelta(days=2)).date()
+
+
+# 11-02 staging(동료 트레이스): 기억의 '11월 14일(토) 이사'를 두고 "이번 주 토요일인 11월 14일"이라고 답했다.
+def test_dated_memories_carry_where_they_fall_from_today():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.memory import memory_block
+    now = datetime(2026, 11, 2, 17, 0, tzinfo=ZoneInfo("Asia/Seoul"))  # 월요일
+    block = memory_block([{"text": "11월 14일(토) 이사"}, {"text": "11월 7일(토) 결혼식"},
+                          {"text": "11월 3일(화) 출장"}, {"text": "고양이를 좋아함"}], None, now)
+    assert "11월 14일(토) 이사 (지금 기준: 다음 주 토요일, 12일 뒤)" in block
+    assert "11월 7일(토) 결혼식 (지금 기준: 이번 주 토요일, 5일 뒤)" in block
+    assert "11월 3일(화) 출장 (지금 기준: 내일)" in block
+    assert "- 고양이를 좋아함\n" in block + "\n"
+    assert when.relative_label(datetime(2026, 10, 30).date(), now.date()) == "이미 지난 날"

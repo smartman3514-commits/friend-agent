@@ -9,10 +9,17 @@
    응답 뒤 백그라운드로 돌리면 기억 정리가 멈추거나 늦어진다. 그래서 응답을 닫기 전에 처리한다.
 
 결과는 이벤트(dict)로 하나씩 내보낸다. show_panel 이 꺼져 있으면(production) 개발용 이벤트는 아예 만들지 않는다.
-"""
-from datetime import timedelta
 
-from app import memory, when
+단계마다 Langfuse 관찰 단위로 남긴다(tracing.py): chat-turn(트레이스) 아래 safety, choose-tools, tool:<이름>,
+reply, memory-update, memory-summary. 화면은 이 함수의 결과를 조각마다 다른 스레드에서 이어 받을 수 있어서,
+chat-turn 은 객체(turn)로 들고 다니고, 단계를 열 때마다 tracing.child 로 turn 을 되살려 그 아래에 붙인다.
+사용자, 세션, 버전 같은 속성(attrs)도 그때마다 함께 걸어 모든 단계에 붙게 한다.
+"""
+from datetime import datetime, timedelta, timezone
+
+from langfuse import propagate_attributes
+
+from app import memory, tracing, when
 from app.logs import log
 from app.persona import DEFAULT_CHARACTER, build_persona
 from app.router import choose
@@ -21,47 +28,104 @@ from app.tools import TOOLS, Context, run_tool
 
 GREETING_GAP = timedelta(hours=6)  # 마지막 대화 뒤 이만큼 지나면 앱을 열 때 먼저 말을 건다
 
+# 공휴일 도구 결과가 있을 때만 붙인다. 11-03 friend-reply 실험(scripts/eval_reply.py):
+# 이 규칙이 없을 때 "12월에 연휴 있어?"(12/25 금)에 연휴를 말한 답 0/12. 처음 문장("사흘 쉰다")으로는 뜻이 맞은 답 6/8 이었지만
+# '사흘'을 그대로 따라 써서 4일로 오해하기 쉬웠고 "주말까지 쭉"처럼 숫자 없는 답도 있었다(숫자 '3일'로 말한 답 2/8).
+# 날짜와 숫자로 말하라고 고쳐도 3번 중 1번은 "주말까지 쭉"이라고 해서, 연휴 계산은 공휴일 도구가 하고(tools.long_weekends)
+# 여기서는 도구가 준 연휴를 그대로 전하게만 한다.
+HOLIDAY_RULES = ("[공휴일 전하기]\n"
+                 "- 도구 결과에 '연휴'가 있으면 그 날짜와 날 수를 그대로 전한다. 예: '25일(금)부터 27일(일)까지 3일 쉬어'. "
+                 "'사흘'이라고 쓰지 않는다(4일로 오해하기 쉽다).\n"
+                 "- 도구 결과에 없는 공휴일의 날짜나 달(예: '다음 공휴일은 12월')은 말하지 않는다. 찾은 기간 밖은 모른다고 말한다.")
+
 
 def system_prompt(character, now, location, memories, summary, tool_lines=(), clarify=False):
     parts = [build_persona(character),
-             f"[지금] {when.label(now)} ({now.tzinfo}), 사용자 지역: {location}\n[달력]\n{when.calendar_hint(now)}"]
-    block = memory.memory_block(memories, summary)
+             f"[지금] {when.label(now)} ({now.tzinfo}), 사용자 지역: {location}\n[달력]\n{when.calendar_hint(now)}",
+             # 11-02 staging(동료 트레이스): 기억에도 약속에도 없는 출장을 "내일 7시 출장 일정으로 확인되었습니다"라고 답했다.
+             "[확인한 척하지 않기]\n사용자의 일정·예약·약속을 '확인했다', '확인되었다', '저장돼 있다'고 말하려면 "
+             "아래 도구 결과나 기억 메모에 근거가 있어야 한다. 근거가 없으면 확인할 수 없다고 솔직히 말하고, "
+             "원하면 약속으로 저장해 알려 줄 수 있다고 묻는다. 사용자가 방금 말한 내용을 되풀이하는 것은 확인이 아니다."]
+    block = memory.memory_block(memories, summary, now)
     if block:
         parts.append(block)
     if tool_lines:
         parts.append("[도구 결과]\n" + "\n".join(f"- {line}" for line in tool_lines))
-        parts.append("[도구 결과 전하기]\n약속의 날짜와 시각은 [도구 결과]에 적힌 그대로 말한다. 사용자가 말한 날짜와 다르면 [도구 결과]가 맞다. "
+        # 11-02 staging: 버그로 "알려줄 수 없어"라고 답한 기록이 최근 대화에 쌓이자, 도구 결과를 받고도 같은 거절을 되풀이했다
+        parts.append("[도구 결과 전하기]\n앞선 대화에서 알려줄 수 없다거나 저장할 수 없다고 했더라도, 지금 [도구 결과]에 있는 내용은 그대로 전한다. "
+                     "이번 질문의 답은 앞선 답이 아니라 지금 [도구 결과]를 따른다.\n약속의 날짜와 시각은 [도구 결과]에 적힌 그대로 말한다. 사용자가 말한 날짜와 다르면 [도구 결과]가 맞다. "
                      "'이번에 실제로 저장된 약속'에 없는 약속은 '저장했어', '저장할게'라고 말하지 않고, 저장한 것을 목록으로 다시 적을 때도 거기 있는 것만 적는다. "
                      "앞선 대화에서 그렇게 말했더라도 지금 [도구 결과]가 맞다. "
                      "저장하지 못한 약속은 그 이유를 짧게 전한다.")
+        if any("공휴일" in line for line in tool_lines):
+            parts.append(HOLIDAY_RULES)
     if clarify:
         parts.append("[되묻기]\n사용자가 무엇을 원하는지 확실하지 않다. 짧게 되물어서 확인한다. "
                      "이번에는 도구를 쓰지 않았으니 약속을 저장했다거나 저장하겠다고 말하지 않는다.")
     return "\n\n".join(parts)
 
 
+def with_tool_note(message, tool_lines):
+    """이번 메시지 바로 뒤에 도구 결과를 한 번 더 붙인다(모델에게만 보내고 저장하지 않는다).
+
+    11-02 staging: "저장할 수 없어"라고 답한 기록이 최근 대화에 쌓이자, 약속이 실제로 저장됐는데도
+    답이 같은 거절을 되풀이했다. 지시문 맨 위의 [도구 결과]보다 가장 최근 메시지 옆에 둔 사실을 더 따른다.
+    """
+    if not tool_lines:
+        return message
+    return (f"{message}\n\n[이번 메시지의 도구 결과: 앞선 대화와 달라도 이것이 맞다. 이 표시는 사용자에게 보이지 않으니 "
+            f"그대로 옮겨 적지 말고 내용만 캐릭터 말투로 전한다]\n" + "\n".join(f"- {line}" for line in tool_lines))
+
+
 def run_turn(message, uid, llm, store, show_panel):
+    turn = tracing.lf().start_observation(name="chat-turn", as_type="span", input=message)
+    try:
+        yield from _turn(turn, message, uid, llm, store, show_panel)
+    finally:  # 사용자가 중간에 창을 닫아도 트레이스는 닫는다
+        turn.end()
+        tracing.flush_on_cloud_run()
+
+
+def _turn(turn, message, uid, llm, store, show_panel):
+    model = getattr(llm, "model", None)
     settings = store.get_settings(uid)
     character = store.get_character(uid) or DEFAULT_CHARACTER
     now = when.now_in(settings["timezone"])
+    attrs = tracing.turn_attributes(uid, now)
+    with tracing.inside(turn, attrs):  # chat-turn 자신에도 속성을 붙인다
+        pass
     memories, summary, recent = memory.build_context(store, uid)
     history = [{"role": m["role"], "content": m["content"]} for m in recent]
     store.add_message(uid, "user", message)
 
     # ① 위기 표현
-    if is_crisis(message):
+    with tracing.child(turn, attrs, name="safety", as_type="span", input=message) as step:
+        crisis = is_crisis(message)
+        step.update(output={"crisis": crisis})
+    if crisis:
         guards = ["위기 표현이 있어 캐릭터 설정과 상관없이 정해진 안전 응답을 보냈습니다."]
         if show_panel:
             yield {"type": "turn", "tools": [], "confidence": None, "reason": "", "decided_by": "rule",
                    "action": "safety", "guards": guards}
         yield {"type": "delta", "text": CRISIS_REPLY}
-        saved = store.add_message(uid, "assistant", CRISIS_REPLY, {"action": "safety", "guards": guards})
+        saved = store.add_message(uid, "assistant", CRISIS_REPLY, {"action": "safety", "guards": guards,
+                                                                    "trace_id": tracing.trace_id(turn)})
         log("WARNING", "위기 표현 안전 응답")
+        with tracing.inside(turn, {**attrs, "tags": ["safety"]}):
+            pass
+        turn.update(output=CRISIS_REPLY, metadata={"message_id": saved["id"], "safety": True})
         yield {"type": "done", "message_id": saved["id"]}
         return
 
-    # ② 도구 선택
-    choice = choose(message, history, now, settings["location"], llm)
+    # ② 도구 선택 (모델이 고르면 llm.py 가 입력, 출력, 토큰을 적는다. 규칙이 고르면 토큰은 0)
+    with tracing.child(turn, attrs, name="choose-tools", as_type="generation", model=model, input=message) as step:
+        choice = choose(message, history, now, settings["location"], llm)
+        step.update(metadata={"tools": [t["name"] for t in choice.tools], "confidence": choice.confidence,
+                              "decided_by": choice.decided_by, "action": choice.action, "guards": choice.guards})
+        if choice.decided_by == "rule":
+            step.update(output={"tools": choice.tools, "reason": choice.reason})
+    if choice.tools:  # 고른 도구 이름을 태그로 붙여 도구별로 걸러 볼 수 있게 한다
+        attrs = {**attrs, "tags": [t["name"] for t in choice.tools]}
     if show_panel:
         yield {"type": "turn", "tools": [{"name": t["name"], "label": TOOLS[t["name"]]["label"], "args": t["args"]}
                                          for t in choice.tools],
@@ -70,7 +134,13 @@ def run_turn(message, uid, llm, store, show_panel):
 
     # ③ 도구 실행
     ctx = Context(store, uid, settings["location"], settings["timezone"])
-    results = [run_tool(t["name"], t["args"], ctx) for t in choice.tools]
+    results = []
+    for t in choice.tools:  # 도구마다 실패하는 이유가 달라서 하나씩 남긴다
+        with tracing.child(turn, attrs, name=f"tool:{t['name']}", as_type="span", input=t["args"]) as step:
+            r = run_tool(t["name"], t["args"], ctx)
+            step.update(output={"summary": r.summary, "data": r.data}, metadata={"ok": r.ok},
+                        level="DEFAULT" if r.ok else "WARNING")
+        results.append(r)
     for r in results:
         if show_panel:
             yield {"type": "tool", "name": r.name, "label": TOOLS[r.name]["label"], "ok": r.ok,
@@ -93,21 +163,43 @@ def run_turn(message, uid, llm, store, show_panel):
     if show_panel:
         yield {"type": "context", "memories": [m["text"] for m in memories],
                "summary": summary["text"] if summary else None, "recent_messages": len(history)}
-    reply = ""
-    for chunk in llm.chat_stream([{"role": "system", "content": system}, *history, {"role": "user", "content": message}]):
-        reply += chunk
-        yield {"type": "delta", "text": chunk}
+    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": with_tool_note(message, lines)}]
+    with tracing.inside(turn, attrs):  # 답은 조각마다 이어지므로 '지금 열린 관찰 단위'로 두지 않고 객체로 든다
+        gen = turn.start_observation(name="reply", as_type="generation", model=model, input=messages)
+    reply, usage = "", {}
+    try:
+        for chunk in llm.chat_stream(messages, usage=usage):
+            if not reply:  # 사용자가 기다린 시간은 첫 글자가 나온 시각까지
+                gen.update(completion_start_time=datetime.now(timezone.utc))
+            reply += chunk
+            yield {"type": "delta", "text": chunk}
+    finally:
+        gen.update(output=reply, model=usage.get("model", model),
+                   usage_details={"input": usage.get("input", 0), "output": usage.get("output", 0)})
+        gen.end()
     meta = {"tools": [t["name"] for t in choice.tools], "confidence": choice.confidence,
-            "action": choice.action, "guards": choice.guards}
+            "action": choice.action, "guards": choice.guards,
+            "trace_id": tracing.trace_id(turn)}  # 화면의 좋아요, 별로예요, 신고를 이 트레이스의 점수로 붙인다
     saved = store.add_message(uid, "assistant", reply, meta)
 
     # ⑤ 기억 정리
     yield {"type": "memory_start"}
-    changes = memory.update_memories(store, uid, message, reply, now, llm)
-    memory.maybe_summarize(store, uid, llm)
+    with tracing.child(turn, attrs, name="memory-update", as_type="generation", model=model) as step:
+        changes = memory.update_memories(store, uid, message, reply, now, llm)
+        saved_texts = {k: [m["text"] for m in v] for k, v in changes.items()}
+        step.update(metadata=saved_texts)  # 모델의 답(output)과 실제로 저장된 것(metadata)을 나란히 본다
+        if not getattr(llm, "can_reason", False):
+            step.update(output=saved_texts)
+    turn.update(output=reply, metadata={"message_id": saved["id"], "tools": [t["name"] for t in choice.tools],
+                                        "confidence": choice.confidence, "safety": False})
     yield {"type": "memory", "added": [m["text"] for m in changes["added"]],
            "updated": [m["text"] for m in changes["updated"]], "removed": [m["text"] for m in changes["removed"]]}
     yield {"type": "done", "message_id": saved["id"]}
+    # 대화 요약은 '끝' 신호를 보낸 뒤에 한다. 화면은 done 을 받으면 바로 다음 메시지를 받는다.
+    # (11-02 동료 트레이스: 요약 2.48초가 끼어 그 턴이 8.21초, 그동안 보내기 버튼이 꺼져 있었다)
+    # 요청은 아직 열려 있어 Cloud Run 이 CPU 를 그대로 준다(응답을 닫은 뒤 백그라운드로 돌리면 CPU 가 거의 없다).
+    with tracing.inside(turn, attrs):
+        memory.maybe_summarize(store, uid, llm)
 
 
 def greet(uid, llm, store):
@@ -132,8 +224,14 @@ def greet(uid, llm, store):
     if not last:
         guide.append("처음 만난 사이다. 이름을 넣어 짧게 자기소개를 한다.")
     system += "\n\n[먼저 말 걸기]\n" + " ".join(guide)
-    text = llm.complete_text([{"role": "system", "content": system},
-                              {"role": "user", "content": "(앱을 열었다. 먼저 말을 걸어 줘)"}])
-    saved = store.add_message(uid, "assistant", text, {"action": "greeting", "reminders": [r["id"] for r in due]})
+    # 실제로 말을 걸 때만 트레이스 하나(greeting)를 남긴다. 모델 호출 하나뿐이라 generation 하나로 둔다
+    with propagate_attributes(**tracing.turn_attributes(uid, now)),             tracing.lf().start_as_current_observation(name="greeting", as_type="generation", model=getattr(llm, "model", None),
+                                                      metadata={"reminders": len(due), "first_meeting": not last}) as obs:
+        text = llm.complete_text([{"role": "system", "content": system},
+                                  {"role": "user", "content": "(앱을 열었다. 먼저 말을 걸어 줘)"}])
+    tracing.flush_on_cloud_run()
+    greeting_trace = tracing.trace_id(obs)
+    saved = store.add_message(uid, "assistant", text, {"action": "greeting", "reminders": [r["id"] for r in due],
+                                                        "trace_id": greeting_trace})
     log("INFO", "먼저 말 걸기", reminders=len(due))
     return {"id": saved["id"], "text": text, "reminders": [r["text"] for r in due]}

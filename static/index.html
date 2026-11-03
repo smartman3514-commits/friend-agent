@@ -82,6 +82,11 @@ body.has-banner .app{height:calc(100dvh - 32px)}
 .note.busy{color:var(--ink-3)}
 .report{font-size:12px;color:var(--ink-3);background:none;border:0;padding:2px 4px;opacity:0;transition:opacity .15s}
 .row.them:hover .report{opacity:1}
+/* 좋아요, 별로예요: 휴대폰에는 hover 가 없어서 늘 흐리게 보이게 둔다 */
+.fb{font-size:13px;background:none;border:0;padding:2px 3px;opacity:.45;cursor:pointer;transition:opacity .15s}
+.fb:hover,.fb:focus-visible{opacity:1}
+.fb[aria-pressed="true"]{opacity:1}
+.fb:disabled{cursor:default}
 .day{align-self:center;font-size:12px;color:var(--ink-3);background:var(--surface-2);border:1px solid var(--line);padding:2px 10px;border-radius:999px}
 
 .composer{padding:10px 24px 18px}
@@ -399,6 +404,7 @@ function addRow(role, text, opts = {}) {
   return {row, bubble: row.querySelector(".bubble"), under};
 }
 function bindReport(row, id) {
+  bindFeedback(row, id);
   let btn = row.querySelector(".report");
   if (!btn) { btn = document.createElement("button"); btn.className = "report"; btn.textContent = "신고"; row.appendChild(btn); }
   btn.onclick = async () => {
@@ -407,6 +413,25 @@ function bindReport(row, id) {
     await api("/api/report", {method: "POST", body: JSON.stringify({message_id: id, reason})});
     btn.textContent = "신고됨"; btn.disabled = true;
   };
+}
+// 좋아요(up), 별로예요(down)를 Langfuse 점수로 보낸다. 한 답에 한 번만 고른다.
+function bindFeedback(row, id) {
+  if (row.querySelector(".fb")) return;
+  const report = row.querySelector(".report");
+  for (const [value, icon, label] of [["up", "👍", "좋아요"], ["down", "👎", "별로예요"]]) {
+    const b = document.createElement("button");
+    b.className = "fb"; b.textContent = icon; b.title = label; b.setAttribute("aria-label", label);
+    b.setAttribute("aria-pressed", "false");
+    b.onclick = async () => {
+      const all = row.querySelectorAll(".fb");
+      all.forEach(x => x.disabled = true);
+      try {
+        await api("/api/feedback", {method: "POST", body: JSON.stringify({message_id: id, value})});
+        b.setAttribute("aria-pressed", "true");
+      } catch (e) { all.forEach(x => x.disabled = false); }
+    };
+    row.insertBefore(b, report || null);
+  }
 }
 function note(under, cls, text) {
   const n = document.createElement("span");
@@ -472,7 +497,10 @@ async function send(text) {
           panel?.memory(e);
           refreshCount();
         }
-        else if (e.type === "done") { finished = true; bubble.textContent = reply || bubble.textContent; bindReport(row, e.message_id); }
+        else if (e.type === "done") {
+          finished = true; bubble.textContent = reply || bubble.textContent; bindReport(row, e.message_id);
+          busy = false; $("#send").disabled = false;  // 서버는 done 뒤에 대화 요약을 이어서 하므로, 다음 메시지는 지금부터 받는다
+        }
         else if (e.type === "error") { finished = true; bubble.textContent = e.message; }
       }
     }
