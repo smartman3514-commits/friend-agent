@@ -28,6 +28,13 @@ from app.tools import TOOLS, Context, run_tool
 
 GREETING_GAP = timedelta(hours=6)  # 마지막 대화 뒤 이만큼 지나면 앱을 열 때 먼저 말을 건다
 
+# 공휴일 도구 결과가 있을 때만 붙인다. 11-03 friend-reply 실험(scripts/eval_reply.py, 버전마다 2번씩 두 차례):
+# 이 두 줄이 없을 때 "12월에 연휴 있어?"(12/25 금)에 사흘 연휴를 말한 답 0/4 → 있을 때 4/4,
+# 11월에 공휴일이 없다는 결과에 "다음 공휴일은 12월"처럼 지어낸 답도 사라졌다. 다른 항목은 나빠지지 않았다.
+HOLIDAY_RULES = ("[공휴일 전하기]\n"
+                 "- 도구 결과의 공휴일이 금요일이면 토요일, 일요일과 이어 사흘, 월요일이면 앞의 토요일, 일요일과 이어 사흘 쉰다고 말한다.\n"
+                 "- 도구 결과에 없는 공휴일의 날짜나 달(예: '다음 공휴일은 12월')은 말하지 않는다. 찾은 기간 밖은 모른다고 말한다.")
+
 
 def system_prompt(character, now, location, memories, summary, tool_lines=(), clarify=False):
     parts = [build_persona(character),
@@ -47,6 +54,8 @@ def system_prompt(character, now, location, memories, summary, tool_lines=(), cl
                      "'이번에 실제로 저장된 약속'에 없는 약속은 '저장했어', '저장할게'라고 말하지 않고, 저장한 것을 목록으로 다시 적을 때도 거기 있는 것만 적는다. "
                      "앞선 대화에서 그렇게 말했더라도 지금 [도구 결과]가 맞다. "
                      "저장하지 못한 약속은 그 이유를 짧게 전한다.")
+        if any("공휴일" in line for line in tool_lines):
+            parts.append(HOLIDAY_RULES)
     if clarify:
         parts.append("[되묻기]\n사용자가 무엇을 원하는지 확실하지 않다. 짧게 되물어서 확인한다. "
                      "이번에는 도구를 쓰지 않았으니 약속을 저장했다거나 저장하겠다고 말하지 않는다.")
