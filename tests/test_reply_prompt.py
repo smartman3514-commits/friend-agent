@@ -22,3 +22,10 @@ def test_tool_results_are_repeated_next_to_the_message():
     note = with_tool_note("물 마시라고 알려 줘", ["약속을 저장했습니다: 11월 3일(화) 08:00에 '물 마시기'."])
     assert note.startswith("물 마시라고 알려 줘\n\n[이번 메시지의 도구 결과")
     assert "'물 마시기'" in note
+
+
+def test_holiday_rules_only_with_holiday_results():
+    from app.agent import HOLIDAY_RULES
+    now = when.now_in("Asia/Seoul")
+    assert HOLIDAY_RULES in system_prompt(DEFAULT_CHARACTER, now, "서울", [], None, ["12월 25일(금) 크리스마스 공휴일"])
+    assert HOLIDAY_RULES not in system_prompt(DEFAULT_CHARACTER, now, "서울", [], None, ["서울 내일 날씨: 맑음"])
