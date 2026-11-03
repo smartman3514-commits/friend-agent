@@ -52,3 +52,47 @@ def test_a_revision_that_keeps_failing_is_rolled_back(monkeypatch, capsys):
     code, out = run(monkeypatch, capsys, broken)
     assert code == 1
     assert "롤백" in out and "ConnectionError" in out
+
+
+def stats(new_count, new_errors, old_count=500):
+    return {"new": {"count": new_count, "errors": new_errors, "latencies": [0.05] * new_count},
+            "old": {"count": old_count, "errors": 0, "latencies": [0.05] * old_count}}
+
+
+def run_with_server(monkeypatch, capsys, urlopen, server):
+    monkeypatch.setattr(canary, "server_stats", lambda *a, **k: server)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(canary, "RETRY_DELAY", 0)
+    monkeypatch.setattr("sys.argv", ["canary_check.py", "http://test", "new", "old", "--seconds", "1",
+                                     "--service", "svc", "--project", "p"])
+    with pytest.raises(SystemExit) as done:
+        canary.main()
+    return done.value.code, capsys.readouterr().out
+
+
+def test_runner_timeouts_do_not_roll_back_when_server_is_healthy(monkeypatch, capsys):
+    # 11-02·03 staging 처럼 러너는 시간초과투성이인데 서버 기록은 모두 정상인 경우
+    def stuck(url, timeout):
+        raise TimeoutError("timed out")
+
+    code, out = run_with_server(monkeypatch, capsys, stuck, stats(60, 0))
+    assert code == 0 and "서버 기록(판정)" in out and "TimeoutError" in out
+
+
+def test_server_errors_on_new_revision_roll_back(monkeypatch, capsys):
+    code, out = run_with_server(monkeypatch, capsys, lambda url, timeout: answer("new"), stats(60, 5))
+    assert code == 1 and "새 리비전 오류율" in out
+
+
+def test_too_few_server_requests_on_new_revision_roll_back(monkeypatch, capsys):
+    code, out = run_with_server(monkeypatch, capsys, lambda url, timeout: answer("new"), stats(3, 0))
+    assert code == 1 and "판단 근거 부족" in out
+
+
+def test_parse_cloud_run_request_logs():
+    entries = [{"resource": {"labels": {"revision_name": "r1"}}, "httpRequest": {"status": 200, "latency": "0.012s"}},
+               {"resource": {"labels": {"revision_name": "r1"}}, "httpRequest": {"status": 503, "latency": "0.5s"}},
+               {"resource": {"labels": {"revision_name": "r1"}}, "httpRequest": {"status": 429}},
+               {"resource": {"labels": {"revision_name": "r1"}}, "textPayload": "앱 로그"}]
+    s = canary.parse_logs(entries)["r1"]
+    assert s["count"] == 3 and s["errors"] == 2 and s["latencies"] == [0.012, 0.5]

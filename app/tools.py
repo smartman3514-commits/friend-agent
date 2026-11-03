@@ -160,6 +160,17 @@ def get_holidays(args, ctx):
     data = {"from": start.isoformat(), "to": end.isoformat(),
             "holidays": [{"date": d.isoformat(), "name": n} for d, n in found]}
     if not found:
+        # 찾은 기간에 없으면 그 뒤의 첫 공휴일도 알려 준다. 빈칸으로 두면 답이 "다음 공휴일은 12월"처럼 지어냈다
+        # (11-03 friend-reply 실험 R05: 답 지시문에 규칙을 더해도 6번 중 2번 지어냄).
+        later = None
+        try:
+            later = next(((d, n) for year in (end.year, end.year + 1) for d, n in holidays_of(year) if d > end), None)
+        except Exception:  # noqa: BLE001 — 다음 공휴일을 못 찾아도 기간 결과는 그대로 전한다
+            pass
+        if later:
+            data["next_holiday"] = {"date": later[0].isoformat(), "name": later[1]}
+            return ToolResult("get_holidays", True, f"{start}부터 {end}까지 공휴일이 없습니다. "
+                                                    f"그 뒤 첫 공휴일은 {when.date_label(later[0])} {later[1]}입니다.", data)
         return ToolResult("get_holidays", True, f"{start}부터 {end}까지 공휴일이 없습니다.", data)
     listed = ", ".join(f"{when.date_label(d)} {n}" for d, n in found[:6])
     more = f" 외 {len(found) - 6}일" if len(found) > 6 else ""
