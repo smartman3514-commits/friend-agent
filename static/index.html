@@ -222,6 +222,7 @@ textarea.input{min-height:80px;resize:vertical}
 .order{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;font-size:13px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
 .order .st{font-size:12px;color:var(--ink-3)}
 .order .btn{padding:4px 10px;font-size:13px}
+.modal .agree{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--ink-2);margin-top:10px;cursor:pointer}.modal .agree input{margin-top:4px}
 .modal .ok{background:var(--ok-soft);color:var(--ok);border-radius:10px;padding:10px 12px;font-weight:700;margin:10px 0}
 </style>
 </head>
@@ -339,14 +340,15 @@ textarea.input{min-height:80px;resize:vertical}
         <div id="payment-method"></div>
         <div id="agreement"></div>
       </div>
-      <p class="fine">결제하면 고른 묶음의 크레딧이 바로 들어와요. 환불 기준은 준비 중이에요(지금은 테스트 결제라 실제로 돈이 빠지지 않아요).</p>
+      <p class="fine">결제가 승인되면 고른 묶음의 크레딧이 바로 들어와요. <b>결제 후 <span id="refundDays">7</span>일 안, 그 묶음을 하나도 쓰지 않았을 때만</b> 전액 환불할 수 있고, 일부라도 쓰면 환불이 어려워요. 무료 크레딧은 환불 대상이 아니에요. (지금은 테스트 결제라 실제로 돈이 빠지지 않아요.)</p>
+      <label class="agree" id="agreeRow" hidden><input type="checkbox" id="agreeTerms"> <span><a href="/terms" target="_blank" rel="noopener">이용약관·환불 정책</a>을 확인했고, 크레딧을 쓰기 시작하면 환불이 어렵다는 데 동의해요</span></label>
       <div class="warn" id="guestWarn" hidden>게스트로 쓰는 중이에요. 브라우저 데이터를 지우면 산 크레딧에 다시 들어올 수 없어요.</div>
       <div class="warn" id="payOff" hidden>지금은 결제가 설정되어 있지 않아요.</div>
     </div>
     <div class="orders" id="orderBox" hidden>
       <h4>결제 내역</h4>
       <div id="orderList"></div>
-      <p class="fine">결제 후 7일 안에, 그 결제로 받은 크레딧을 하나도 쓰지 않았을 때만 전액 환불할 수 있어요. 크레딧은 먼저 받은 것부터 써요.</p>
+      <p class="fine">결제 후 7일 안에, 그 결제로 받은 크레딧을 하나도 쓰지 않았을 때만 전액 환불할 수 있어요. 크레딧은 먼저 받은 것부터 써요. <a href="/terms#refund" target="_blank" rel="noopener">환불 정책 전체 보기</a></p>
     </div>
     <div class="row"><button class="btn" id="creditClose">닫기</button><button class="btn primary" id="payBtn" hidden disabled>결제하기</button></div>
   </div>
@@ -751,7 +753,10 @@ $("#deleteAll").onclick = async () => {
 
 // ── 크레딧과 결제 ────────────────────────────────────────────
 // 잔액과 상품은 모두 서버가 준 값을 그대로 보여 준다. 차감과 지급은 서버만 한다.
-let creditInfo = null, products = [], chosen = null, widgets = null;
+let creditInfo = null, products = [], chosen = null, widgets = null, widgetReady = false;
+// 결제하기는 결제위젯이 준비되고, 이용약관·환불 정책 동의에 체크했을 때만 누를 수 있다
+const syncPay = () => { $("#payBtn").disabled = !(widgetReady && $("#agreeTerms").checked); };
+$("#agreeTerms").addEventListener("change", syncPay);
 async function refreshCredits() {
   creditInfo = await api("/api/credits");
   const b = creditInfo.balance;
@@ -769,6 +774,8 @@ async function openCredits({why = "", ok = ""} = {}) {
   $("#payOff").hidden = !!creditInfo.payments;
   if (!products.length) products = await api("/api/products");
   chosen = null; $("#payArea").hidden = true; $("#payBtn").hidden = true; $("#payBtn").disabled = true;
+  $("#agreeRow").hidden = true; $("#agreeTerms").checked = false; widgetReady = false;
+  if (creditInfo.refund_days) $("#refundDays").textContent = creditInfo.refund_days;
   $("#productList").innerHTML = products.map(p => `<button type="button" class="product" data-id="${esc(p.id)}" ${creditInfo.payments ? "" : "disabled"}>
       <span><span class="n">${esc(p.name)}</span><br><span class="u">크레딧 1개 약 ${p.unit_price}원</span></span>
       <span class="n">${p.amount.toLocaleString()}원</span></button>`).join("");
@@ -812,7 +819,7 @@ $("#productList").onclick = async e => {
   if (!btn || btn.disabled) return;
   chosen = products.find(p => p.id === btn.dataset.id);
   $("#productList").querySelectorAll(".product").forEach(b => b.classList.toggle("on", b === btn));
-  $("#payBtn").hidden = false; $("#payBtn").disabled = true;
+  $("#payBtn").hidden = false; $("#payBtn").disabled = true; $("#agreeRow").hidden = false; widgetReady = false;
   try {
     await loadToss();
     $("#payArea").hidden = false;
@@ -827,7 +834,7 @@ $("#productList").onclick = async e => {
     } else {
       await widgets.setAmount({currency: "KRW", value: chosen.amount});
     }
-    $("#payBtn").disabled = false;
+    widgetReady = true; syncPay();
   } catch (err) {
     console.error(err);
     $("#creditWhy").hidden = false; $("#creditWhy").textContent = "결제창을 열지 못했어요. 잠시 뒤 다시 해 주세요.";
@@ -856,7 +863,7 @@ $("#payBtn").onclick = async () => {
       $("#creditWhy").textContent = canceled ? "결제를 취소했어요. 크레딧은 그대로예요." : (err?.message || "결제에 실패했어요.");
       $("#creditOk").hidden = true;
     }
-    $("#payBtn").disabled = false;
+    syncPay();
   }
 };
 
