@@ -21,6 +21,8 @@ class MemoryStore:
         self.lock = threading.Lock()
         self.ids = itertools.count(1)
         self.users = {}
+        self.ledger, self.refs, self.orders = [], set(), {}  # 크레딧 원장과 주문은 사용자 데이터와 따로 둔다
+        self.free_grants = {}  # user_id → {"ip_hash", "day", "granted"}
 
     def _user(self, uid):
         return self.users.setdefault(uid, {
@@ -113,4 +115,95 @@ class MemoryStore:
         return claimed
 
     def delete_all(self, uid):
+        # 크레딧 원장과 주문은 돈의 기록이라 지우지 않는다(지우면 가입 무료 크레딧을 다시 받을 수도 있다)
         self.users.pop(uid, None)
+
+    # 크레딧 원장: 쌓기만 한다. 잔액은 합계. ref 는 유일하다
+    def add_credit(self, uid, delta, reason, ref):
+        """새 줄을 쌓으면 True, 같은 ref 가 이미 있으면 False(두 번 넣지 않는다)."""
+        with self.lock:
+            ledger = self.ledger
+            if ref in self.refs:
+                return False
+            self.refs.add(ref)
+            ledger.append({"id": len(ledger) + 1, "user_id": uid, "delta": delta, "reason": reason, "ref": ref,
+                           "created_at": utcnow()})
+            return True
+
+    def grant_signup(self, uid, ip_hash, amount, limit):
+        """가입 무료 크레딧. 같은 ip_hash 는 하루(한국 날짜) limit 명까지. 받았으면 True."""
+        from app.when import now_in
+        today = now_in("Asia/Seoul").date()
+        with self.lock:
+            if uid in self.free_grants:
+                return self.free_grants[uid]["granted"]
+            used = sum(1 for g in self.free_grants.values() if g["ip_hash"] == ip_hash and g["day"] == today and g["granted"])
+            granted = f"signup:{uid}" in self.refs or used < limit
+            self.free_grants[uid] = {"ip_hash": ip_hash, "day": today, "granted": granted}
+            if granted and f"signup:{uid}" not in self.refs:
+                self.refs.add(f"signup:{uid}")
+                self.ledger.append({"id": len(self.ledger) + 1, "user_id": uid, "delta": amount, "reason": "signup",
+                                    "ref": f"signup:{uid}", "created_at": utcnow()})
+            return granted
+
+    def credit_balance(self, uid):
+        return sum(r["delta"] for r in self.ledger if r["user_id"] == uid)
+
+    def spend_credit(self, uid, amount, reason, ref):
+        """잔액 확인과 빼기를 잠금 안에서 한 번에 한다. (통과 여부, 남은 잔액)"""
+        with self.lock:
+            ledger = self.ledger
+            balance = sum(r["delta"] for r in ledger if r["user_id"] == uid)
+            if balance < amount or ref in self.refs:
+                return False, balance
+            self.refs.add(ref)
+            ledger.append({"id": len(ledger) + 1, "user_id": uid, "delta": -amount, "reason": reason, "ref": ref,
+                           "created_at": utcnow()})
+            return True, balance - amount
+
+    def credit_history(self, uid, limit):
+        rows = [dict(r) for r in self.ledger if r["user_id"] == uid]
+        return list(reversed(rows))[:limit]
+
+    # 결제 주문
+    def create_order(self, uid, order):
+        with self.lock:
+            self.orders[order["order_id"]] = {**order, "user_id": uid, "status": "pending", "payment_key": None,
+                                              "fail_code": None, "approved_at": None, "refunded_at": None,
+                                              "created_at": utcnow()}
+        return dict(self.orders[order["order_id"]])
+
+    def get_order(self, uid, order_id):
+        """이 사용자의 주문 하나. 다른 사람의 주문이면 None."""
+        o = self.orders.get(order_id)
+        return dict(o) if o and o["user_id"] == uid else None
+
+    def complete_order(self, uid, order_id, payment_key, approved_at):
+        """대기 중인 주문만 완료로 바꾼다. 바꿨으면 True."""
+        with self.lock:
+            o = self.get_order(uid, order_id)
+            if not o or o["status"] != "pending":
+                return False
+            self.orders[order_id].update(status="done", payment_key=payment_key, approved_at=approved_at)
+            return True
+
+    def move_order(self, uid, order_id, expected, new, **fields):
+        """주문 상태가 expected 일 때만 new 로 바꾼다(환불 중복 막기). 바꿨으면 True."""
+        with self.lock:
+            o = self.get_order(uid, order_id)
+            if not o or o["status"] != expected:
+                return False
+            self.orders[order_id].update(status=new, **fields)
+            return True
+
+    def list_orders(self, uid, limit):
+        rows = [dict(o) for o in self.orders.values() if o["user_id"] == uid]
+        return sorted(rows, key=lambda o: o["created_at"], reverse=True)[:limit]
+
+    def fail_order(self, uid, order_id, code):
+        with self.lock:
+            o = self.get_order(uid, order_id)
+            if not o or o["status"] != "pending":
+                return False
+            self.orders[order_id].update(status="failed", fail_code=code)
+            return True
