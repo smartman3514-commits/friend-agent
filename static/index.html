@@ -199,6 +199,30 @@ textarea.input{min-height:80px;resize:vertical}
   .grid{grid-template-columns:1fr}
   .bubble{max-width:84%}
 }
+
+/* 크레딧과 충전 */
+.credit-btn{margin-left:auto;border:1px solid var(--line-2);background:var(--surface);border-radius:999px;padding:4px 12px;font-size:13px;font-weight:700;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.credit-btn.low{border-color:var(--warn);color:var(--warn);background:var(--warn-soft)}
+.low-strip{display:flex;align-items:center;gap:10px;justify-content:space-between;background:var(--warn-soft);color:var(--warn);border-radius:10px;padding:6px 12px;font-size:13px;margin-bottom:8px}
+.modal-back{position:fixed;inset:0;background:rgba(30,25,20,.45);display:grid;place-items:center;z-index:50;padding:16px}
+.modal{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);width:min(520px,100%);max-height:calc(100dvh - 32px);overflow-y:auto;padding:22px}
+.modal h3{margin:0 0 4px;font-size:18px}
+.modal .why{background:var(--accent-soft);color:#b8383c;border-radius:10px;padding:8px 12px;font-size:14px;margin:10px 0}
+.modal .bal{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums}
+.modal .rule{color:var(--ink-2);font-size:13px;margin:2px 0 14px}
+.products{display:grid;gap:8px}
+.product{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--surface);text-align:left;font-variant-numeric:tabular-nums}
+.product:hover,.product.on{border-color:var(--accent);background:var(--accent-soft)}
+.product .n{font-weight:700}.product .u{font-size:12px;color:var(--ink-3)}
+.modal .fine{font-size:12px;color:var(--ink-3);margin:12px 0 0}
+.modal .warn{font-size:12px;color:var(--warn);background:var(--warn-soft);border-radius:8px;padding:8px 10px;margin-top:10px}
+.modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.orders{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.orders h4{margin:0 0 8px;font-size:14px}
+.order{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;font-size:13px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.order .st{font-size:12px;color:var(--ink-3)}
+.order .btn{padding:4px 10px;font-size:13px}
+.modal .ok{background:var(--ok-soft);color:var(--ok);border-radius:10px;padding:10px 12px;font-weight:700;margin:10px 0}
 </style>
 </head>
 <body>
@@ -228,12 +252,14 @@ textarea.input{min-height:80px;resize:vertical}
       <div class="ava" id="topAva">🐻</div>
       <div><div class="t" id="topName">하루</div><div class="s" id="topSub">대화</div></div>
       <span class="ai-badge">AI 캐릭터와의 대화입니다</span>
+      <button class="credit-btn" id="creditBtn" title="남은 크레딧" hidden>크레딧 –</button>
       <button class="panel-btn" id="panelBtn">이번 턴</button>
     </header>
 
     <section id="view-chat" class="main" style="flex:1;min-height:0">
       <div class="chat" id="chat"><div class="thread" id="thread"></div></div>
       <div class="composer"><div class="composer-in">
+        <div class="low-strip" id="lowStrip" hidden><span>크레딧이 얼마 남지 않았어요</span><button type="button" class="btn" id="lowBuy">크레딧 사기</button></div>
         <div class="suggest" id="suggest"></div>
         <form class="box" id="form">
           <button type="button" class="photo" id="photoBtn" title="사진에서 글자 읽기" hidden>📷</button>
@@ -299,6 +325,32 @@ textarea.input{min-height:80px;resize:vertical}
   </aside>
 </div>
 
+
+<div class="modal-back" id="creditModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="creditTitle">
+    <h3 id="creditTitle">크레딧</h3>
+    <div class="why" id="creditWhy" hidden></div>
+    <div class="ok" id="creditOk" hidden></div>
+    <div class="bal" id="creditBal">–</div>
+    <div class="rule">메시지 1개를 보낼 때마다 크레딧 1개가 빠져요. 답을 만들지 못하면 다시 돌려드려요.</div>
+    <div id="buyArea">
+      <div class="products" id="productList"></div>
+      <div id="payArea" hidden>
+        <div id="payment-method"></div>
+        <div id="agreement"></div>
+      </div>
+      <p class="fine">결제하면 고른 묶음의 크레딧이 바로 들어와요. 환불 기준은 준비 중이에요(지금은 테스트 결제라 실제로 돈이 빠지지 않아요).</p>
+      <div class="warn" id="guestWarn" hidden>게스트로 쓰는 중이에요. 브라우저 데이터를 지우면 산 크레딧에 다시 들어올 수 없어요.</div>
+      <div class="warn" id="payOff" hidden>지금은 결제가 설정되어 있지 않아요.</div>
+    </div>
+    <div class="orders" id="orderBox" hidden>
+      <h4>결제 내역</h4>
+      <div id="orderList"></div>
+      <p class="fine">결제 후 7일 안에, 그 결제로 받은 크레딧을 하나도 쓰지 않았을 때만 전액 환불할 수 있어요. 크레딧은 먼저 받은 것부터 써요.</p>
+    </div>
+    <div class="row"><button class="btn" id="creditClose">닫기</button><button class="btn primary" id="payBtn" hidden disabled>결제하기</button></div>
+  </div>
+</div>
 <script type="module">
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
@@ -460,7 +512,7 @@ async function greet() {
 async function send(text) {
   if (busy || !text.trim()) return;
   busy = true; $("#send").disabled = true;
-  addRow("user", text);
+  const {row: userRow} = addRow("user", text);
   const {row, bubble, under} = addRow("assistant", "");
   bubble.innerHTML = `<span class="cursor"></span>`;
   const panel = cfg.show_turn_panel ? startPanel() : null;
@@ -468,6 +520,15 @@ async function send(text) {
   let reply = "", busyNote = null, finished = false;
   try {
     const r = await api("/api/chat", {method: "POST", body: JSON.stringify({message: text}), raw: true});
+    if (r.status === 402) {
+      // 크레딧 부족: 방금 그린 말풍선을 지우고, 보내려던 메시지는 입력창에 돌려놓고, 충전 창을 연다
+      const body = await r.json();
+      row.remove(); userRow.remove();
+      $("#input").value = text; autosize();
+      finished = true;
+      await openCredits({why: body.message});
+      return;
+    }
     if (!r.ok) throw new Error(await r.text());
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = "";
@@ -498,6 +559,7 @@ async function send(text) {
           refreshCount();
         }
         else if (e.type === "done") {
+          refreshCredits().catch(() => {});
           finished = true; bubble.textContent = reply || bubble.textContent; bindReport(row, e.message_id);
           busy = false; $("#send").disabled = false;  // 서버는 done 뒤에 대화 요약을 이어서 하므로, 다음 메시지는 지금부터 받는다
         }
@@ -687,6 +749,138 @@ $("#deleteAll").onclick = async () => {
   await api("/api/data", {method: "DELETE"}); location.reload();
 };
 
+// ── 크레딧과 결제 ────────────────────────────────────────────
+// 잔액과 상품은 모두 서버가 준 값을 그대로 보여 준다. 차감과 지급은 서버만 한다.
+let creditInfo = null, products = [], chosen = null, widgets = null;
+async function refreshCredits() {
+  creditInfo = await api("/api/credits");
+  const b = creditInfo.balance;
+  $("#creditBtn").hidden = false;
+  $("#creditBtn").textContent = `크레딧 ${b.toLocaleString()}`;
+  $("#creditBtn").classList.toggle("low", b <= creditInfo.low);
+  $("#lowStrip").hidden = !(b > 0 && b <= creditInfo.low);
+  $("#creditBal").textContent = `${b.toLocaleString()}개 남음`;
+}
+async function openCredits({why = "", ok = ""} = {}) {
+  await refreshCredits();
+  $("#creditWhy").hidden = !why; $("#creditWhy").textContent = why;
+  $("#creditOk").hidden = !ok; $("#creditOk").textContent = ok;
+  $("#guestWarn").hidden = !(me && me.anonymous && cfg.auth === "supabase");
+  $("#payOff").hidden = !!creditInfo.payments;
+  if (!products.length) products = await api("/api/products");
+  chosen = null; $("#payArea").hidden = true; $("#payBtn").hidden = true; $("#payBtn").disabled = true;
+  $("#productList").innerHTML = products.map(p => `<button type="button" class="product" data-id="${esc(p.id)}" ${creditInfo.payments ? "" : "disabled"}>
+      <span><span class="n">${esc(p.name)}</span><br><span class="u">크레딧 1개 약 ${p.unit_price}원</span></span>
+      <span class="n">${p.amount.toLocaleString()}원</span></button>`).join("");
+  $("#creditModal").hidden = false;
+  loadOrders().catch(console.error);
+}
+const ORDER_STATUS = {done: "결제 완료", refunding: "환불 처리 중", refunded: "환불됨"};
+async function loadOrders() {
+  const orders = await api("/api/orders");
+  $("#orderBox").hidden = !orders.length;
+  $("#orderList").innerHTML = orders.map(o => `<div class="order">
+      <span>${esc(o.name)} · ${o.amount.toLocaleString()}원<br><span class="st">${ORDER_STATUS[o.status] || esc(o.status)}${o.why_not && o.status === "done" ? " · " + esc(o.why_not) : ""}</span></span>
+      ${o.refundable || o.status === "refunding" ? `<button type="button" class="btn" data-refund="${esc(o.orderId)}">환불</button>` : ""}</div>`).join("");
+}
+$("#orderList").onclick = async e => {
+  const id = e.target.dataset.refund;
+  if (!id || !confirm("이 결제를 전액 환불할까요? 받은 크레딧도 함께 빠져요.")) return;
+  e.target.disabled = true;
+  const r = await api(`/api/orders/${encodeURIComponent(id)}/refund`, {method: "POST", raw: true});
+  const body = await r.json().catch(() => ({}));
+  $("#creditOk").hidden = !r.ok; $("#creditOk").textContent = r.ok ? "환불했어요. 결제가 취소되고 크레딧도 함께 빠졌어요." : "";
+  $("#creditWhy").hidden = r.ok; $("#creditWhy").textContent = r.ok ? "" : (body.detail || "환불하지 못했어요.");
+  await refreshCredits(); await loadOrders();
+};
+function closeCredits() { $("#creditModal").hidden = true; }
+$("#creditBtn").onclick = () => openCredits();
+$("#lowBuy").onclick = () => openCredits();
+$("#creditClose").onclick = closeCredits;
+$("#creditModal").addEventListener("click", e => { if (e.target.id === "creditModal") closeCredits(); });
+
+async function loadToss() {
+  if (window.TossPayments) return;
+  await new Promise((ok, fail) => {
+    const s = document.createElement("script");
+    s.src = "https://js.tosspayments.com/v2/standard"; s.onload = ok; s.onerror = fail;
+    document.head.appendChild(s);
+  });
+}
+$("#productList").onclick = async e => {
+  const btn = e.target.closest(".product");
+  if (!btn || btn.disabled) return;
+  chosen = products.find(p => p.id === btn.dataset.id);
+  $("#productList").querySelectorAll(".product").forEach(b => b.classList.toggle("on", b === btn));
+  $("#payBtn").hidden = false; $("#payBtn").disabled = true;
+  try {
+    await loadToss();
+    $("#payArea").hidden = false;
+    if (!widgets) {
+      // 게스트도 쓸 수 있게 비회원(ANONYMOUS)으로 결제위젯을 연다
+      widgets = TossPayments(cfg.toss_client_key).widgets({customerKey: TossPayments.ANONYMOUS});
+      await widgets.setAmount({currency: "KRW", value: chosen.amount});
+      await Promise.all([
+        widgets.renderPaymentMethods({selector: "#payment-method", variantKey: "DEFAULT"}),
+        widgets.renderAgreement({selector: "#agreement", variantKey: "AGREEMENT"}),
+      ]);
+    } else {
+      await widgets.setAmount({currency: "KRW", value: chosen.amount});
+    }
+    $("#payBtn").disabled = false;
+  } catch (err) {
+    console.error(err);
+    $("#creditWhy").hidden = false; $("#creditWhy").textContent = "결제창을 열지 못했어요. 잠시 뒤 다시 해 주세요.";
+  }
+};
+$("#payBtn").onclick = async () => {
+  if (!chosen || !widgets) return;
+  $("#payBtn").disabled = true;
+  let order = null;
+  try {
+    // 주문은 서버가 먼저 저장한다. 화면은 상품 ID만 보내고, 금액은 서버가 돌려준 값으로 결제한다
+    order = await api("/api/orders", {method: "POST", body: JSON.stringify({product_id: chosen.id})});
+    await widgets.setAmount({currency: "KRW", value: order.amount});
+    try { sessionStorage.setItem("pendingOrder", order.orderId); } catch (_) {}  // 결제창을 닫으면 failUrl 에 orderId 가 없다
+    const back = location.origin + location.pathname;
+    await widgets.requestPayment({orderId: order.orderId, orderName: order.orderName,
+      successUrl: back + "?pay=success", failUrl: back + "?pay=fail"});
+  } catch (err) {
+    // PC에서 결제창을 닫으면 failUrl 로 가지 않고 여기로 오류(USER_CANCEL 등)가 온다. 주문을 실패로 바꾼다
+    console.error(err);
+    try { sessionStorage.removeItem("pendingOrder"); } catch (_) {}
+    if (order) {
+      await api("/api/payments/fail", {method: "POST", body: JSON.stringify({orderId: order.orderId, code: err?.code || "CLIENT_ERROR"})}).catch(() => {});
+      const canceled = ["USER_CANCEL", "PAY_PROCESS_CANCELED"].includes(err?.code);
+      $("#creditWhy").hidden = false;
+      $("#creditWhy").textContent = canceled ? "결제를 취소했어요. 크레딧은 그대로예요." : (err?.message || "결제에 실패했어요.");
+      $("#creditOk").hidden = true;
+    }
+    $("#payBtn").disabled = false;
+  }
+};
+
+// successUrl/failUrl 로 돌아왔을 때. 받은 값을 서버로 보내기만 하고 크레딧을 직접 늘리지 않는다
+async function handlePaymentReturn() {
+  const q = new URLSearchParams(location.search);
+  const kind = q.get("pay");
+  if (!kind) return;
+  history.replaceState(null, "", location.pathname);
+  let pending = null;
+  try { pending = sessionStorage.getItem("pendingOrder"); sessionStorage.removeItem("pendingOrder"); } catch (_) {}
+  if (kind === "success") {
+    const r = await api("/api/payments/confirm", {method: "POST", raw: true,
+      body: JSON.stringify({paymentKey: q.get("paymentKey"), orderId: q.get("orderId"), amount: Number(q.get("amount"))})});
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) await openCredits({ok: `크레딧 ${body.credits.toLocaleString()}개가 충전됐어요.`});
+    else await openCredits({why: body.detail || "결제를 확인하지 못했어요."});
+  } else {
+    const orderId = q.get("orderId") || pending;
+    if (orderId) await api("/api/payments/fail", {method: "POST", body: JSON.stringify({orderId, code: q.get("code") || ""})});
+    const canceled = q.get("code") === "PAY_PROCESS_CANCELED";
+    await openCredits({why: canceled ? "결제를 취소했어요. 크레딧은 그대로예요." : (q.get("message") || "결제에 실패했어요.")});
+  }
+}
 // ── 시작 ─────────────────────────────────────────────────────
 // 지금 배포된 커밋 앞 7자리를 왼쪽 아래에 보여 준다(/version). 실패해도 화면은 그대로 쓴다.
 fetch("/version").then(r => r.json()).then(v => {
@@ -704,6 +898,8 @@ fetch("/version").then(r => r.json()).then(v => {
   renderAccount();
   character = (await api("/api/character")).character;
   paintCharacter(); refreshCount();
+  refreshCredits().catch(console.error);  // 캐릭터를 만들기 전 화면에서도 크레딧이 보이게
+  await handlePaymentReturn();
   if (!me.has_character) { $("#setupTitle").textContent = "캐릭터 만들기"; show("setup"); return; }
   await loadHistory();
   await greet();

@@ -38,6 +38,8 @@ class Settings:
     google_login: bool
     show_turn_panel: bool
     ocr_enabled: bool
+    toss_client_key: str      # 결제위젯용 클라이언트 키. 화면에 보내도 되는 값
+    toss_secret_key: str      # 결제 승인용 시크릿 키. 서버만 읽는다. 화면, /api/config, 로그에 절대 넣지 않는다
 
 
 def load_dotenv(path):
@@ -111,7 +113,10 @@ def load_settings():
         # 개발용 "이번 턴" 패널. production 에서는 기본으로 끈다.
         show_turn_panel=env_flag("SHOW_TURN_PANEL", env != "production"),
         ocr_enabled=env_flag("OCR_ENABLED", False),  # 사진 글자 읽기. tesseract 프로그램이 필요하다
+        toss_client_key=os.environ.get("TOSS_CLIENT_KEY", "").strip(),
+        toss_secret_key=os.environ.get("TOSS_SECRET_KEY", "").strip(),
     )
     log("INFO", "앱을 시작합니다.", provider=settings.provider, model=settings.model, env=settings.env,
-        storage=settings.storage, auth=settings.auth, turn_panel=settings.show_turn_panel)
+        storage=settings.storage, auth=settings.auth, turn_panel=settings.show_turn_panel,
+        payments=bool(settings.toss_client_key and settings.toss_secret_key))
     return settings
