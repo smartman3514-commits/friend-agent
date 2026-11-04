@@ -227,3 +227,11 @@ def test_someone_elses_order_cannot_be_refunded(user, toss, monkeypatch):
     o = bought(user)
     login("pay-test-intruder2")
     assert refund(o).status_code == 404 and cancel.calls == []
+
+
+def test_terms_page_uses_the_real_numbers():
+    # 약관의 숫자는 코드 값에서 채운다(코드와 약관이 어긋나지 않게)
+    page = client.get("/terms").text
+    assert "{{" not in page
+    assert f"{credits.REFUND_DAYS}일 안" in page and "1,000원" in page and "1,200" in page
+    assert f"하루(한국 날짜) {credits.FREE_PER_IP_PER_DAY}명" in page

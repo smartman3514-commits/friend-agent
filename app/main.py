@@ -131,6 +131,19 @@ def home():
     return page.replace("<!--ENV_BANNER-->", banner)
 
 
+@app.get("/terms", response_class=HTMLResponse)
+def terms():
+    """이용약관·환불 정책(초안). 숫자는 credits.py 의 실제 값으로 채워 코드와 약관이 어긋나지 않게 한다."""
+    rows = "".join(f"<tr><td>{html.escape(p['name'])}</td><td>{p['amount']:,}원</td><td>{p['credits']:,}</td>"
+                   f"<td>약 {p['unit_price']}원</td></tr>" for p in credits.product_list())
+    page = (ROOT / "static" / "terms.html").read_text(encoding="utf-8")
+    for key, value in {"COST_CHAT": credits.COST["chat"], "FREE_CREDITS": credits.FREE_CREDITS,
+                       "FREE_PER_IP": credits.FREE_PER_IP_PER_DAY, "REFUND_DAYS": credits.REFUND_DAYS,
+                       "PRODUCT_ROWS": rows}.items():
+        page = page.replace("{{" + key + "}}", str(value))
+    return page
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -321,7 +334,8 @@ def get_credits(request: Request, user: User = Depends(current_user)):
     history = [{"delta": r["delta"], "reason": r["reason"], "created_at": r["created_at"].isoformat()}
                for r in store.credit_history(user.id, 10)]
     return {"balance": store.credit_balance(user.id), "cost": credits.COST, "low": credits.LOW_BALANCE,
-            "history": history, "payments": bool(settings.toss_client_key and settings.toss_secret_key)}
+            "history": history, "payments": bool(settings.toss_client_key and settings.toss_secret_key),
+            "refund_days": credits.REFUND_DAYS}
 
 
 @app.get("/api/products")
