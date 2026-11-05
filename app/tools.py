@@ -241,13 +241,51 @@ def list_reminders(args, ctx):
 def cancel_reminder(args, ctx):
     query = str(args.get("query") or "").strip()
     items = ctx.store.list_reminders(ctx.user_id, status="pending")
-    match = next((r for r in items if query and (query in r["text"] or r["text"] in query)), None)
-    if not match and len(items) == 1:
-        match = items[0]
+    match = find_reminder(query, items)
     if not match:
         return ToolResult("cancel_reminder", False, f"'{query}'에 해당하는 약속을 찾지 못했습니다.")
     ctx.store.cancel_reminder(ctx.user_id, match["id"])
     return ToolResult("cancel_reminder", True, f"약속을 취소했습니다: '{match['text']}'.", {"id": match["id"]})
+
+
+def find_reminder(query, items):
+    """약속 글로 대기 중인 약속을 찾는다. 글이 없거나 못 찾으면 하나뿐일 때 그것, 아니면 None."""
+    match = next((r for r in items if query and (query in r["text"] or r["text"] in query)), None)
+    if not match and len(items) == 1:
+        match = items[0]
+    return match
+
+
+def update_reminder(args, ctx):
+    """저장된 약속의 시각을 바꾼다. 새 약속을 만들지 않고 그 약속의 시각만 고친다(11-05: '9시 말고 7시'에
+    새 약속을 하나 더 만들고, '저녁 말고 아침'에는 아무것도 안 하고 '변경했어'라고만 답했다).
+    time_only: 메시지에 날짜 말이 없으면 원래 약속의 날짜는 두고 시각만 바꾼다(router.py 가 정한다)."""
+    now = when.now_in(ctx.timezone)
+    query = str(args.get("query") or "").strip()
+    items = ctx.store.list_reminders(ctx.user_id, status="pending")
+    match = find_reminder(query, items)
+    if not match and not query and items:
+        match = max(items, key=lambda r: r["created_at"])  # "방금 그 약속" — 가장 최근에 저장한 약속
+    if not match:
+        if not items:
+            return ToolResult("update_reminder", False, "바꿀 약속이 없습니다. 저장된 약속이 없습니다.")
+        shown = ", ".join(f"'{r['text']}'" for r in items[:5])
+        return ToolResult("update_reminder", False, f"'{query}'에 해당하는 약속을 찾지 못해 바꾸지 않았습니다. 저장된 약속: {shown}.")
+    due, error = when.check_due(args.get("due_at"), now)
+    old = match["due_at"].astimezone(now.tzinfo)
+    if not error and args.get("time_only"):
+        due = old.replace(hour=due.astimezone(now.tzinfo).hour, minute=due.astimezone(now.tzinfo).minute)
+        if due <= now:
+            error = "바꾼 시각이 이미 지났습니다."
+    if error:
+        return ToolResult("update_reminder", False, f"'{match['text']}' 약속을 바꾸지 않았습니다: {error}")
+    changed = ctx.store.reschedule_reminder(ctx.user_id, match["id"], due)
+    if not changed:
+        return ToolResult("update_reminder", False, f"'{match['text']}' 약속을 바꾸지 못했습니다(이미 알렸거나 취소된 약속).")
+    local = due.astimezone(now.tzinfo)
+    return ToolResult("update_reminder", True,
+                      f"약속 시각을 바꿨습니다: '{match['text']}' {when.label(old)} → {when.label(local)}.",
+                      {"id": match["id"], "text": match["text"], "due_at": local.isoformat(), "before": old.isoformat()})
 
 
 TOOLS = {
@@ -280,6 +318,11 @@ TOOLS = {
         "run": cancel_reminder, "label": "약속 취소",
         "desc": "저장된 약속을 취소",
         "args": '{"query": "취소할 약속 내용의 일부"}',
+    },
+    "update_reminder": {
+        "run": update_reminder, "label": "약속 시각 바꾸기",
+        "desc": "이미 저장된 약속의 날짜·시각을 바꿈('9시 말고 7시로', '아침으로 옮겨 줘'). 새 약속을 만들지 않음",
+        "args": '{"query": "바꿀 약속 내용의 일부(최근 대화에서)", "due_at": "바꿀 ISO 8601 시각, 사용자 시간대 오프셋 포함"}',
     },
 }
 

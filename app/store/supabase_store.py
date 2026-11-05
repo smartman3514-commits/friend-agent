@@ -132,6 +132,11 @@ class SupabaseStore:
     def cancel_reminder(self, uid, reminder_id):
         self._update("reminders", {"status": "cancelled"}, user_id=f"eq.{uid}", id=f"eq.{reminder_id}", status="eq.pending")
 
+    def reschedule_reminder(self, uid, reminder_id, due_at):
+        """대기 중인 약속의 시각만 바꾼다(새로 만들지 않는다). 바꿨으면 그 약속, 아니면 None."""
+        rows = self._update("reminders", {"due_at": iso(due_at)}, user_id=f"eq.{uid}", id=f"eq.{reminder_id}", status="eq.pending")
+        return self._reminder(rows[0]) if rows else None
+
     def claim_due_reminders(self, uid, now):
         """status 가 pending 인 행만 바꾸는 조건부 업데이트. 요청 두 개가 동시에 와도 한쪽만 그 행을 돌려받는다."""
         rows = self._update("reminders", {"status": "delivered", "delivered_at": iso(datetime.now(timezone.utc))},
