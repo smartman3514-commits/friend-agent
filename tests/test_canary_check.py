@@ -96,3 +96,28 @@ def test_parse_cloud_run_request_logs():
                {"resource": {"labels": {"revision_name": "r1"}}, "textPayload": "앱 로그"}]
     s = canary.parse_logs(entries)["r1"]
     assert s["count"] == 3 and s["errors"] == 2 and s["latencies"] == [0.012, 0.5]
+
+
+def busy_stats(new_count, errors, busy):
+    s = stats(new_count, errors)
+    s["new"]["busy"] = busy
+    return s
+
+
+def test_only_429_on_new_revision_asks_to_measure_again(monkeypatch, capsys):
+    # 2026-11-04 운영·11-05 staging: 새 리비전이 429(인스턴스 대기)만 내고 앱 오류는 없었다 → 3(다시 재기)
+    code, out = run_with_server(monkeypatch, capsys, lambda url, timeout: answer("new"), busy_stats(54, 5, 5))
+    assert code == 3 and "다시 재기" in out
+
+
+def test_any_5xx_on_new_revision_still_rolls_back(monkeypatch, capsys):
+    # 5xx 가 하나라도 섞이면 다시 재지 않고 바로 롤백(1)
+    code, out = run_with_server(monkeypatch, capsys, lambda url, timeout: answer("new"), busy_stats(54, 5, 4))
+    assert code == 1 and "롤백" in out
+
+
+def test_parse_counts_429_as_busy():
+    entries = [{"resource": {"labels": {"revision_name": "r1"}}, "httpRequest": {"status": 429}},
+               {"resource": {"labels": {"revision_name": "r1"}}, "httpRequest": {"status": 503}}]
+    s = canary.parse_logs(entries)["r1"]
+    assert s["errors"] == 2 and s["busy"] == 1
