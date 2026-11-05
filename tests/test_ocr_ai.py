@@ -55,7 +55,8 @@ def test_ai_reads_the_photo_and_three_credits_are_spent(user):
     assert r.status_code == 200 and r.json()["text"] == "11월 20일 오후 3시 치과"
     assert r.json()["credits_used"] == 3 and store.credit_balance(user) == 27
     instruction, size = stub.calls[0]
-    assert "옮겨 적어" in instruction and max(size) == ocr.VISION_LONG_SIDE   # 큰 사진은 줄여서 보낸다
+    assert "옮겨 적어" in instruction
+    assert min(size) == ocr.VISION_SHORT_SIDE and max(size) <= ocr.VISION_LONG_SIDE   # 큰 사진은 512px 조각 2개 크기로 줄인다
 
 
 def test_failed_reading_gives_the_credits_back(user):

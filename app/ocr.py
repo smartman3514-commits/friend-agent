@@ -31,7 +31,10 @@ class OcrError(Exception):
     pass
 
 
-VISION_LONG_SIDE = 1600   # AI 에게 보낼 사진 크기. 일정표 글자를 읽기에 충분하고 토큰(비용)을 아낀다
+# AI 에게 보낼 사진 크기. gpt-4o-mini 는 사진을 512px 조각 수로 요금을 매긴다(짧은 변 768 이하로 맞춘 뒤 512 조각).
+# 11-05 실측: 긴 변 1600px → 조각 4개, 입력 25,609 토큰, 약 5원. 짧은 변을 512 이하로 두면 조각 2개로 거의 절반.
+VISION_SHORT_SIDE = 512
+VISION_LONG_SIDE = 1024
 VISION_INSTRUCTION = (
     "이 사진 속 글자를 한국어 그대로 옮겨 적어 줘. 손글씨도 읽는다.\n"
     "- 일정표·안내문이면 일정 하나를 한 줄로 쓴다(날짜, 시각, 할 일 순서).\n"
@@ -63,9 +66,9 @@ def read_with_ai(image, llm) -> str:
 
     image = ImageOps.exif_transpose(image).convert("RGB")
     w, h = image.size
-    if max(w, h) > VISION_LONG_SIDE:
-        scale = VISION_LONG_SIDE / max(w, h)
-        image = image.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
+    scale = min(1.0, VISION_SHORT_SIDE / min(w, h), VISION_LONG_SIDE / max(w, h))
+    if scale < 1.0:
+        image = image.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
     buf = io.BytesIO()
     image.save(buf, "JPEG", quality=85)
     try:
