@@ -333,7 +333,7 @@ textarea.input{min-height:80px;resize:vertical}
     <div class="why" id="creditWhy" hidden></div>
     <div class="ok" id="creditOk" hidden></div>
     <div class="bal" id="creditBal">–</div>
-    <div class="rule">메시지 1개를 보낼 때마다 크레딧 1개가 빠져요. 답을 만들지 못하면 다시 돌려드려요.</div>
+    <div class="rule">메시지 1개를 보낼 때마다 크레딧 1개가 빠져요(사진 글자 읽기는 한 번에 3개). 답을 만들지 못하면 다시 돌려드려요.</div>
     <div id="buyArea">
       <div class="products" id="productList"></div>
       <div id="payArea" hidden>
@@ -603,6 +603,7 @@ $("#photoInput").onchange = async () => {
   try {
     const r = await fetch("/api/ocr", {method: "POST", body: form, headers: token ? {Authorization: `Bearer ${token}`} : {}});
     const data = await r.json();
+    if (r.status === 402) { await openCredits({why: data.message}); return; }   // 사진 읽기 크레딧 부족 → 충전 창
     if (!r.ok) throw new Error(data.detail || r.status);
     $("#input").value = `사진에서 읽은 글이야. 여기 있는 일정 중에 알려 줘야 할 게 있으면 약속으로 저장해 줘.\n${data.text}`;
     autosize(); $("#input").focus();
