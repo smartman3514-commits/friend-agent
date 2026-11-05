@@ -59,11 +59,11 @@ def spend_for_chat(store, uid, ip_key="test"):
 
 
 def spend_for_ocr(store, uid, ip_key="test"):
-    """사진 한 장 읽기에 크레딧 COST['ocr'] 개. 원장 reason 은 DB 제약(signup/chat/refund/purchase) 안의 'chat' 을 쓰고,
-    참조를 ocr:요청ID 로 메시지와 나눈다."""
+    """사진 한 장 읽기에 크레딧 COST['ocr'] 개. 원장 reason 은 'ocr'(0003 마이그레이션), 참조는 ocr:요청ID.
+    2026-11-05 이전 사진 읽기 줄은 reason='chat' 이고 ref 로만 구분된다."""
     ensure_signup(store, uid, ip_key)
     ref = f"ocr:{uuid.uuid4().hex}"
-    ok, balance = store.spend_credit(uid, COST["ocr"], "chat", ref)
+    ok, balance = store.spend_credit(uid, COST["ocr"], "ocr", ref)
     return ok, balance, ref
 
 
