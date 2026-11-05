@@ -11,7 +11,9 @@
 그때마다 Cloud Run 요청 기록은 전부 200·빠름이었고, 같은 이미지 재실행은 0건이었다. 0.5초 뒤 한 번 다시 묻는 것으로도
 못 막았다(러너와 서비스 사이가 몇 초씩 통째로 막힘). 사용자가 겪는 것은 서버 기록 쪽이므로 그것으로 판정하고,
 러너 쪽 실패는 참고로 적는다.
-통과하면 0, 실패하면 1로 끝난다. 표준 라이브러리와 gcloud 만 쓴다(러너에 따로 설치하지 않음).
+통과하면 0, 실패하면 1로 끝난다. 새 리비전 오류가 모두 429(인스턴스 대기)이고 5xx 가 없으면 3으로 끝난다 —
+워크플로가 새 리비전을 다시 깨운 뒤 한 번 더 재고, 그래도 기준을 넘으면 롤백한다(2026-11-04 운영·11-05 staging 에서
+새 리비전이 몇 초~100초 동안 429 "waiting too long for an available instance"만 내고 앱 오류는 없었다. 재실행은 통과). 표준 라이브러리와 gcloud 만 쓴다(러너에 따로 설치하지 않음).
 
 실행: python3 scripts/canary_check.py <서비스 주소> <새 리비전> <이전 리비전> --seconds 120 --service <서비스 이름> --project <프로젝트>
 """
@@ -55,10 +57,11 @@ def parse_logs(entries):
         req = e.get("httpRequest") or {}
         if not rev or "status" not in req:
             continue
-        s = stats.setdefault(rev, {"count": 0, "errors": 0, "latencies": []})
+        s = stats.setdefault(rev, {"count": 0, "errors": 0, "busy": 0, "latencies": []})
         s["count"] += 1
         status = int(req["status"])
         s["errors"] += status >= 500 or status == 429
+        s["busy"] += status == 429   # Cloud Run 이 인스턴스를 못 줘서 돌려보낸 요청(앱까지 오지 않음)
         if str(req.get("latency", "")).endswith("s"):
             s["latencies"].append(float(req["latency"][:-1]))
     return stats
@@ -174,13 +177,19 @@ def main():
         lines.append("판정 기준: 러너 측정(서버 기록 없음)")
         # 러너 측정은 실패를 리비전별로 나눌 수 없어 예전처럼 전체 요청 대비 실패율로 본다
         reasons = verdict(len(failures) / max(total, 1), "실패율", len(new), new, old)
-    lines.append("판단: " + ("통과" if not reasons else "롤백 — " + "; ".join(reasons)))
+    # 오류율만 넘었고 그 오류가 전부 429(인스턴스 대기)면 '다시 재기'(3). 5xx 가 하나라도 있으면 바로 롤백(1).
+    only_busy = (stats is not None and reasons and len(reasons) == 1 and reasons[0].startswith("새 리비전 오류율")
+                 and s_new["errors"] > 0 and s_new.get("busy", 0) == s_new["errors"])
+    if only_busy:
+        lines.append(f"판단: 다시 재기 — 오류 {s_new['errors']}건이 모두 429(인스턴스 대기), 5xx 없음. 새 리비전을 깨운 뒤 한 번 더 잰다")
+    else:
+        lines.append("판단: " + ("통과" if not reasons else "롤백 — " + "; ".join(reasons)))
     print("\n".join(lines))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write("\n".join(f"- {line}" for line in lines) + "\n")
-    raise SystemExit(1 if reasons else 0)
+    raise SystemExit(3 if only_busy else 1 if reasons else 0)
 
 
 if __name__ == "__main__":

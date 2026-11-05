@@ -108,16 +108,44 @@ jobs:
           URL=$(echo "$SVC_JSON" | jq -r '.status.url')
           echo "이전 리비전 (롤백할 곳) $OLD / 새 리비전 $NEW"
           echo "### 카나리: 이전 리비전 (롤백할 곳) \`$OLD\` → 새 리비전 \`$NEW\`" >> "$GITHUB_STEP_SUMMARY"
+          CAND=$(echo "$SVC_JSON" | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
+          # 트래픽을 옮기기 직전에 새 리비전을 깨워 둔다(태그 URL 로 /health 가 5번 연속 200 일 때까지, 최대 40초).
+          # 2026-11-04 운영·11-05 staging: 옮긴 직후 새 리비전이 몇 초~100초 동안 429(인스턴스 대기)만 냈다.
+          warm() {
+            local ok=0
+            for i in $(seq 1 40); do
+              if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$CAND/health" || true)" = "200" ]; then
+                ok=$((ok + 1)); if [ "$ok" -ge 5 ]; then echo "새 리비전 깨움: /health 200 연속 5번 (${i}초)"; return 0; fi
+              else ok=0; fi
+              sleep 1
+            done
+            echo "새 리비전을 40초 안에 깨우지 못했다(그대로 잰다)"
+          }
+          rollback() {
+            echo "기준을 넘어 이전 리비전 $OLD 로 되돌린다"
+            gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$OLD=100"
+            echo "**롤백: $1% 단계에서 기준을 넘어 \`$OLD\` 로 100% 되돌림**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
           for P in 10 50; do
+            warm
             gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$NEW=$P,$OLD=$((100 - P))"
             echo "#### 새 리비전 $P%" >> "$GITHUB_STEP_SUMMARY"
-            if ! python3 scripts/canary_check.py "$URL" "$NEW" "$OLD" --seconds 120 \
-                 --service "${{ vars.SERVICE }}" --project "${{ vars.GCP_PROJECT_ID }}"; then
-              echo "기준을 넘어 이전 리비전 $OLD 로 되돌린다"
-              gcloud run services update-traffic "${{ vars.SERVICE }}" --region us-central1 --to-revisions "$OLD=100"
-              echo "**롤백: $P% 단계에서 기준을 넘어 \`$OLD\` 로 100% 되돌림**" >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
+            # 0 통과, 1 롤백, 3 새 리비전 오류가 전부 429(인스턴스 대기)라 다시 깨워 한 번 더 잰다(두 번째도 같은 기준).
+            for TRY in 1 2; do
+              set +e
+              python3 scripts/canary_check.py "$URL" "$NEW" "$OLD" --seconds 120 \
+                --service "${{ vars.SERVICE }}" --project "${{ vars.GCP_PROJECT_ID }}"
+              RC=$?
+              set -e
+              if [ "$RC" = "0" ]; then break; fi
+              if [ "$RC" = "3" ] && [ "$TRY" = "1" ]; then
+                echo "429(인스턴스 대기)만 있어 새 리비전을 다시 깨우고 한 번 더 잰다" | tee -a "$GITHUB_STEP_SUMMARY"
+                warm
+                continue
+              fi
+              rollback "$P"
+            done
           done
 
       # 6. 전환: 카나리를 통과하면 가장 최근 리비전으로 100% 옮긴다.
