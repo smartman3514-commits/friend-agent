@@ -20,7 +20,7 @@ import os
 import uuid
 from datetime import timedelta
 
-COST = {"chat": 1}
+COST = {"chat": 1, "ocr": 3}   # 사진 글자 읽기는 AI 가 사진을 보느라 메시지보다 비싸다(한 장 약 2~4원)
 FREE_CREDITS = int(os.environ.get("FREE_CREDITS", "30") or 30)
 FREE_PER_IP_PER_DAY = int(os.environ.get("FREE_PER_IP_PER_DAY", "3") or 3)
 LOW_BALANCE = 10  # 이 아래면 화면이 "얼마 남지 않았어요" 띠를 보여 준다
@@ -58,8 +58,17 @@ def spend_for_chat(store, uid, ip_key="test"):
     return ok, balance, ref
 
 
-def refund(store, uid, ref):
-    store.add_credit(uid, COST["chat"], "refund", f"refund:{ref}")
+def spend_for_ocr(store, uid, ip_key="test"):
+    """사진 한 장 읽기에 크레딧 COST['ocr'] 개. 원장 reason 은 DB 제약(signup/chat/refund/purchase) 안의 'chat' 을 쓰고,
+    참조를 ocr:요청ID 로 메시지와 나눈다."""
+    ensure_signup(store, uid, ip_key)
+    ref = f"ocr:{uuid.uuid4().hex}"
+    ok, balance = store.spend_credit(uid, COST["ocr"], "chat", ref)
+    return ok, balance, ref
+
+
+def refund(store, uid, ref, amount=None):
+    store.add_credit(uid, amount or COST["chat"], "refund", f"refund:{ref}")
 
 
 def product_list():

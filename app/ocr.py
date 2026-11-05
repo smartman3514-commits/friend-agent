@@ -31,16 +31,56 @@ class OcrError(Exception):
     pass
 
 
-def read_text(data: bytes) -> str:
-    import pytesseract
+VISION_LONG_SIDE = 1600   # AI 에게 보낼 사진 크기. 일정표 글자를 읽기에 충분하고 토큰(비용)을 아낀다
+VISION_INSTRUCTION = (
+    "이 사진 속 글자를 한국어 그대로 옮겨 적어 줘. 손글씨도 읽는다.\n"
+    "- 일정표·안내문이면 일정 하나를 한 줄로 쓴다(날짜, 시각, 할 일 순서).\n"
+    "- 사진에 없는 내용, 추측, 설명, 인사는 쓰지 않는다. 읽기 어려운 글자는 [?] 로 둔다.\n"
+    "- 글자가 없으면 아무것도 쓰지 않는다. 옮긴 글만 답한다."
+)
+
+
+def read_text(data: bytes, llm=None) -> str:
+    """사진 속 글자를 읽는다. llm 이 사진을 읽을 수 있으면(read_image) AI 로, 아니면 tesseract 로.
+    11-05: 앱 카메라로 찍은 손글씨 일정이 tesseract 로는 조각('우 3시 A 과')만 읽혀 AI 읽기를 기본으로 했다.
+    가짜 LLM(테스트·로컬)은 사진을 못 읽으므로 tesseract 를 쓴다."""
     from PIL import Image, UnidentifiedImageError
 
     if len(data) > MAX_BYTES:
         raise OcrError("사진이 5MB보다 큽니다.")
     try:
         image = Image.open(io.BytesIO(data))
-    except UnidentifiedImageError as error:
+        image.load()
+    except (UnidentifiedImageError, OSError) as error:
         raise OcrError("사진 파일을 읽을 수 없습니다.") from error
+    if llm is not None and hasattr(llm, "read_image"):
+        return read_with_ai(image, llm)
+    return read_with_tesseract(image)
+
+
+def read_with_ai(image, llm) -> str:
+    from PIL import Image, ImageOps
+
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    w, h = image.size
+    if max(w, h) > VISION_LONG_SIDE:
+        scale = VISION_LONG_SIDE / max(w, h)
+        image = image.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    image.save(buf, "JPEG", quality=85)
+    try:
+        text = llm.read_image(VISION_INSTRUCTION, buf.getvalue())
+    except Exception as error:
+        log("ERROR", "AI 사진 글자 읽기 실패", error=type(error).__name__)
+        raise OcrError("사진 글자를 읽지 못했어요. 잠시 뒤 다시 해 주세요.") from error
+    text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    log("INFO", "사진 글자 읽기", engine="ai", chars=len(text))
+    return text
+
+
+def read_with_tesseract(image) -> str:
+    import pytesseract
+
     try:
         langs = pytesseract.get_languages(config="")
         lang = "kor+eng" if "kor" in langs else "eng"
@@ -52,5 +92,5 @@ def read_text(data: bytes) -> str:
         log("ERROR", "tesseract 프로그램을 찾을 수 없습니다. 실행 환경에 tesseract 가 설치되어 있지 않습니다.")
         raise OcrError("사진에서 글자를 읽는 프로그램이 서버에 없습니다.") from error
     text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-    log("INFO", "사진 글자 읽기", lang=lang, chars=len(text))
+    log("INFO", "사진 글자 읽기", engine="tesseract", lang=lang, chars=len(text))
     return text

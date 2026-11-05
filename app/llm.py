@@ -8,6 +8,7 @@ fake 는 키 없이 화면과 흐름을 확인하거나 테스트할 때 쓰는 
 한 번에 답을 받는 호출은 지금 열린 generation 에 바로 적고, 스트리밍 답은 끝난 뒤 usage 에 담아 돌려준다
 (스트리밍은 조각마다 다른 스레드에서 돌 수 있어 '지금 열린 generation'을 찾을 수 없기 때문).
 """
+import base64
 import json
 import re
 import time
@@ -56,6 +57,16 @@ class OpenAICompatibleLLM:
             if event.usage is not None and usage is not None:  # 마지막 조각에만 토큰 수가 온다
                 usage.update(model=self.model, input=_count(event.usage, "prompt_tokens"),
                              output=_count(event.usage, "completion_tokens"))
+
+    def read_image(self, instruction, jpeg):
+        """사진 한 장을 보고 instruction 대로 글을 돌려준다(사진 속 글자 옮기기). jpeg 는 JPEG 바이트."""
+        url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        content = [{"type": "text", "text": instruction}, {"type": "image_url", "image_url": {"url": url, "detail": "high"}}]
+        response = self.client.chat.completions.create(model=self.model, messages=[{"role": "user", "content": content}])
+        text = (response.choices[0].message.content or "").strip()
+        # 트레이스에는 사진 자체(base64)를 넣지 않고 안내문과 결과만 남긴다
+        self._record([{"role": "user", "content": instruction + " [사진 1장]"}], text, response.usage)
+        return text
 
     def _record(self, messages, output, usage):
         tracing.record_llm(self.model, messages, output, _count(usage, "prompt_tokens"), _count(usage, "completion_tokens"))
@@ -115,6 +126,15 @@ class ClaudeLLM:
         if response.stop_reason == "refusal":
             raise ValueError("Claude가 요청을 거절했습니다.")
         return parse_json_object(text)
+
+    def read_image(self, instruction, jpeg):
+        """사진 한 장을 보고 instruction 대로 글을 돌려준다(사진 속 글자 옮기기)."""
+        image = {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(jpeg).decode()}}
+        turns = [{"role": "user", "content": [image, {"type": "text", "text": instruction}]}]
+        response = self.client.beta.messages.create(**self._request("", turns))
+        text = self._text(response)
+        self._record([{"role": "user", "content": instruction + " [사진 1장]"}], text, response)
+        return text
 
     def complete_text(self, messages):
         system, turns = self.to_claude(messages)

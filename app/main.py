@@ -22,7 +22,9 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from langfuse import propagate_attributes
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app import agent, credits, ocr, payments, tracing, when
 from app.auth import Auth, User
@@ -137,7 +139,7 @@ def terms():
     rows = "".join(f"<tr><td>{html.escape(p['name'])}</td><td>{p['amount']:,}원</td><td>{p['credits']:,}</td>"
                    f"<td>약 {p['unit_price']}원</td></tr>" for p in credits.product_list())
     page = (ROOT / "static" / "terms.html").read_text(encoding="utf-8")
-    for key, value in {"COST_CHAT": credits.COST["chat"], "FREE_CREDITS": credits.FREE_CREDITS,
+    for key, value in {"COST_CHAT": credits.COST["chat"], "COST_OCR": credits.COST["ocr"], "FREE_CREDITS": credits.FREE_CREDITS,
                        "FREE_PER_IP": credits.FREE_PER_IP_PER_DAY, "REFUND_DAYS": credits.REFUND_DAYS,
                        "PRODUCT_ROWS": rows}.items():
         page = page.replace("{{" + key + "}}", str(value))
@@ -252,13 +254,25 @@ def greeting(user: User = Depends(current_user), model=Depends(get_llm)):
 
 
 @app.post("/api/ocr")
-async def read_photo(photo: UploadFile, user: User = Depends(current_user)):
+async def read_photo(photo: UploadFile, request: Request, user: User = Depends(current_user), model=Depends(get_llm)):
+    """사진 속 글자를 읽는다(AI 가 사진을 보고 옮겨 적음). 크레딧 COST['ocr'] 개를 먼저 빼고, 실패하면 돌려준다."""
     if not settings.ocr_enabled:
         raise HTTPException(404, "사진 글자 읽기가 꺼져 있습니다")
+    data = await photo.read()
+    ok, balance, ref = credits.spend_for_ocr(store, user.id, ip_key(request))
+    if not ok:
+        return JSONResponse({"error": "insufficient_credits", "balance": balance,
+                             "message": f"사진 읽기에는 크레딧 {credits.COST['ocr']}개가 필요해요. 충전하면 바로 읽어 드릴게요."},
+                            status_code=402)
+    now = when.now_in("Asia/Seoul")
     try:
-        return {"text": ocr.read_text(await photo.read())}
+        with propagate_attributes(**tracing.turn_attributes(user.id, now)), \
+                tracing.lf().start_as_current_observation(name="ocr", as_type="generation", model=getattr(model, "model", None)):
+            text = await run_in_threadpool(ocr.read_text, data, model)
     except ocr.OcrError as error:
+        credits.refund(store, user.id, ref, credits.COST["ocr"])
         raise HTTPException(500, str(error)) from error
+    return {"text": text, "credits_used": credits.COST["ocr"]}
 
 
 def own_answer(user, message_id):
