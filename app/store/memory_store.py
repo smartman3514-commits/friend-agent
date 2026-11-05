@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 from app.store.base import DEFAULT_SETTINGS
 
 
+# DB 의 credit_ledger_reason_check 와 같게 둔다(0002, 0003). 메모리 저장소도 같은 값만 받아 테스트에서 어긋남을 잡는다
+LEDGER_REASONS = ("signup", "chat", "ocr", "refund", "purchase")
+
+
 def utcnow():
     return datetime.now(timezone.utc)
 
@@ -130,6 +134,8 @@ class MemoryStore:
     # 크레딧 원장: 쌓기만 한다. 잔액은 합계. ref 는 유일하다
     def add_credit(self, uid, delta, reason, ref):
         """새 줄을 쌓으면 True, 같은 ref 가 이미 있으면 False(두 번 넣지 않는다)."""
+        if reason not in LEDGER_REASONS:
+            raise ValueError(f"원장 reason 이 DB 제약에 없다: {reason}")
         with self.lock:
             ledger = self.ledger
             if ref in self.refs:
@@ -160,6 +166,8 @@ class MemoryStore:
 
     def spend_credit(self, uid, amount, reason, ref):
         """잔액 확인과 빼기를 잠금 안에서 한 번에 한다. (통과 여부, 남은 잔액)"""
+        if reason not in LEDGER_REASONS:
+            raise ValueError(f"원장 reason 이 DB 제약에 없다: {reason}")
         with self.lock:
             ledger = self.ledger
             balance = sum(r["delta"] for r in ledger if r["user_id"] == uid)
