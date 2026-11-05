@@ -29,3 +29,11 @@ def test_holiday_rules_only_with_holiday_results():
     now = when.now_in("Asia/Seoul")
     assert HOLIDAY_RULES in system_prompt(DEFAULT_CHARACTER, now, "서울", [], None, ["12월 25일(금) 크리스마스 공휴일"])
     assert HOLIDAY_RULES not in system_prompt(DEFAULT_CHARACTER, now, "서울", [], None, ["서울 내일 날씨: 맑음"])
+
+
+def test_where_am_i_tells_what_we_know():
+    # 11-05 앱: "내가 어디에 있어?"에 모른다고만 했다 → 설정된 지역과 📍 안내를 지시문에 넣는다
+    now = when.now_in("Asia/Seoul")
+    prompt = system_prompt(DEFAULT_CHARACTER, now, "성남", [], None)
+    assert "[내 위치 질문]" in prompt and "'성남'" in prompt and "📍" in prompt
+    assert "[도구 결과]" not in prompt   # 가짜 LLM 이 이 글자를 찾아 답을 만들므로 쓰지 않는다
