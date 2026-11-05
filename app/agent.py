@@ -15,6 +15,7 @@ reply, memory-update, memory-summary. 화면은 이 함수의 결과를 조각�
 chat-turn 은 객체(turn)로 들고 다니고, 단계를 열 때마다 tracing.child 로 turn 을 되살려 그 아래에 붙인다.
 사용자, 세션, 버전 같은 속성(attrs)도 그때마다 함께 걸어 모든 단계에 붙게 한다.
 """
+import re
 from datetime import datetime, timedelta, timezone
 
 from langfuse import propagate_attributes
@@ -42,10 +43,18 @@ HOLIDAY_RULES = ("[공휴일 전하기]\n"
 def system_prompt(character, now, location, memories, summary, tool_lines=(), clarify=False):
     parts = [build_persona(character),
              f"[지금] {when.label(now)} ({now.tzinfo}), 사용자 지역: {location}\n[달력]\n{when.calendar_hint(now)}",
+             # 11-05 앱: "내가 어디에 있어?"에 "알 수 없어"로만 답했다. 아는 만큼(설정된 지역)은 친절히 알려 준다.
+             f"[내 위치 질문]\n사용자가 자기가 지금 어디 있는지 물으면, 실시간 위치(GPS)는 받지 않아 정확한 위치는 모른다고 솔직히 말하고, "
+             f"아는 것은 알려 준다: 날씨·미세먼지 지역이 '{location}'(으)로 설정돼 있다. "
+             f"다른 곳이면 앱 왼쪽 위 📍를 눌러 지금 위치로 맞추거나, 지금 있는 동네를 말해 달라고 다정하게 덧붙인다. "
+             f"기억 메모에 사는 곳·자주 가는 곳이 있으면 그것도 '전에 ~라고 했었지'처럼 함께 말한다. 근거 없는 장소는 지어내지 않는다.",
              # 11-02 staging(동료 트레이스): 기억에도 약속에도 없는 출장을 "내일 7시 출장 일정으로 확인되었습니다"라고 답했다.
              "[확인한 척하지 않기]\n사용자의 일정·예약·약속을 '확인했다', '확인되었다', '저장돼 있다'고 말하려면 "
              "아래 도구 결과나 기억 메모에 근거가 있어야 한다. 근거가 없으면 확인할 수 없다고 솔직히 말하고, "
-             "원하면 약속으로 저장해 알려 줄 수 있다고 묻는다. 사용자가 방금 말한 내용을 되풀이하는 것은 확인이 아니다."]
+             "원하면 약속으로 저장해 알려 줄 수 있다고 묻는다. 사용자가 방금 말한 내용을 되풀이하는 것은 확인이 아니다.\n"
+             # 11-05 staging: 약속 도구가 돌지 않았는데 "아침 7시로 변경했어!"라고 답했다.
+             "약속을 '바꿨다', '변경했다', '옮겼다', '취소했다'고 말하려면 이번 턴의 도구 결과에 그 결과(약속 시각을 바꿨습니다, 약속을 취소했습니다)가 "
+             "있어야 한다. 없으면 아직 바꾸지 못했다고 말하고, 어느 약속을 몇 시로 바꿀지 다시 말해 달라고 한다."]
     block = memory.memory_block(memories, summary, now)
     if block:
         parts.append(block)
@@ -75,6 +84,19 @@ def with_tool_note(message, tool_lines):
         return message
     return (f"{message}\n\n[이번 메시지의 도구 결과: 앞선 대화와 달라도 이것이 맞다. 이 표시는 사용자에게 보이지 않으니 "
             f"그대로 옮겨 적지 말고 내용만 캐릭터 말투로 전한다]\n" + "\n".join(f"- {line}" for line in tool_lines))
+
+
+# 11-05 앱: "내가 어디에 있어?"에 지시문 규칙만으로는 "알 수 없어"를 되풀이하거나 "네가 서울에 있다고 해줬어"라고 했다.
+# 위치를 묻는 말이면 확인된 사실을 메시지 옆에 붙인다(연휴 계산처럼 코드가 근거를 준다).
+WHERE_PATTERN = re.compile(r"(내가|나|저|제가)\s*(지금\s*)?어디\s*(에\s*)?(있|야|이야|인지|일까)|내\s*위치|여기\s*어디")
+
+
+def location_note(message, location):
+    if not WHERE_PATTERN.search(message):
+        return []
+    return [f"날씨·미세먼지 지역 설정: {location} (앱 설정값이다. 사용자가 대화에서 말한 것이 아니므로 '네가 말했다'고 하지 않는다)",
+            "실시간 위치(GPS)는 받지 않아 지금 정확히 어디 있는지는 모른다",
+            "다른 곳에 있으면 앱 왼쪽 위 📍를 눌러 지금 위치로 맞출 수 있다고 안내한다"]
 
 
 def run_turn(message, uid, llm, store, show_panel):
@@ -145,7 +167,7 @@ def _turn(turn, message, uid, llm, store, show_panel):
         if show_panel:
             yield {"type": "tool", "name": r.name, "label": TOOLS[r.name]["label"], "ok": r.ok,
                    "summary": r.summary, "data": r.data}
-        if r.ok and r.name in ("create_reminder", "cancel_reminder"):
+        if r.ok and r.name in ("create_reminder", "cancel_reminder", "update_reminder"):
             yield {"type": "reminder", "action": r.name, "summary": r.summary}
 
     # ④ 답 생성
@@ -163,7 +185,7 @@ def _turn(turn, message, uid, llm, store, show_panel):
     if show_panel:
         yield {"type": "context", "memories": [m["text"] for m in memories],
                "summary": summary["text"] if summary else None, "recent_messages": len(history)}
-    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": with_tool_note(message, lines)}]
+    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": with_tool_note(message, lines + location_note(message, settings["location"]))}]
     with tracing.inside(turn, attrs):  # 답은 조각마다 이어지므로 '지금 열린 관찰 단위'로 두지 않고 객체로 든다
         gen = turn.start_observation(name="reply", as_type="generation", model=model, input=messages)
     reply, usage = "", {}

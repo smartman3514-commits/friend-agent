@@ -104,6 +104,15 @@ class MemoryStore:
             if r["id"] == reminder_id and r["status"] == "pending":
                 r["status"] = "cancelled"
 
+    def reschedule_reminder(self, uid, reminder_id, due_at):
+        """대기 중인 약속의 시각만 바꾼다(새로 만들지 않는다). 바꿨으면 그 약속, 아니면 None."""
+        with self.lock:
+            for r in self._user(uid)["reminders"]:
+                if r["id"] == reminder_id and r["status"] == "pending":
+                    r["due_at"] = due_at.astimezone(timezone.utc)
+                    return dict(r)
+        return None
+
     def claim_due_reminders(self, uid, now):
         """때가 된 약속을 '전달됨'으로 바꾸고, 이번에 바꾼 것만 돌려준다(같은 약속을 두 번 전하지 않게)."""
         claimed = []

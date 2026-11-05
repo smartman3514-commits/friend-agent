@@ -43,6 +43,10 @@ ASK_PATTERN = re.compile(r"(라고|으라고|하라고)\s*(꼭\s*)?(알려|말�
 REQUEST_PATTERN = re.compile(r"알려\s*(줘|주|달)|알림|약속으로\s*저장|잊지|리마인|깨워|챙겨\s*(줘|주)|말해\s*(줘|주)")
 # 바로 앞 답에서 캐릭터가 먼저 "알려 줄까?"라고 물었으면, "응"만 해도 부탁으로 본다
 OFFER_PATTERN = re.compile(r"알려\s*줄까|알림.*(할까|맞춰|설정)")
+# 약속 시각 바꾸기. 11-05 staging: "9시 말고 7시에 알려줘요"는 새 약속을 하나 더 만들었고, "저녁 7시 말고 아침7시요"는
+# '알려 줘'가 없어 약속이 빠진 채 답만 "변경했어"라고 했다. 바꾸는 말 + (시각·날짜) + 앞 대화가 약속이면 바꾸기로 본다.
+CHANGE_PATTERN = re.compile(r"말고|바꿔|바꾸|변경|옮겨|미뤄|당겨|늦춰|대신")
+REMINDER_TALK = re.compile(r"약속|알려|알림|기억할게|잊지|저장|리마인드")
 CANCEL_WORDS = ["취소", "지워", "없던 걸로", "안 알려 줘도", "안 알려줘도"]
 # 11-02 staging(동료 트레이스): "스케쥴 확인해줘", "주말에 일정이 뭐있지"에 도구를 안 쓰거나 공휴일 도구를 골라,
 # 답이 저장된 적 없는 출장을 "확인되었습니다"라고 지어냈다. 일정·스케줄도 약속 목록으로 본다.
@@ -67,6 +71,8 @@ def router_prompt():
         "- 사용자가 자기 일정·스케줄·약속을 확인하거나 무엇이 있는지 물으면 list_reminders 를 고른다(공휴일을 묻는 게 아니면 get_holidays 가 아니다).",
         "- create_reminder 의 text 는 알려 줄 내용만 짧게 쓴다. 예: '우산 챙기기', '일찍 자기'. 예시 문구나 메시지에 없는 일정을 약속으로 만들지 않는다.",
         "- create_reminder 의 due_at 은 [지금] 시각과 시간대를 기준으로 계산한다. 시각 없이 날짜만 있으면 09:00, 아침 08:00, 점심 12:00, 저녁 19:00, 밤 21:00 으로 한다.",
+        "- 이미 저장한 약속의 시각·날짜를 바꿔 달라면('9시 말고 7시로', '아침으로 옮겨 줘') update_reminder 를 고른다. create_reminder 로 새 약속을 만들지 않는다. "
+        "query 는 최근 대화의 그 약속 내용, due_at 은 바꿀 시각이다. 오전·오후를 말하지 않으면 원래 약속과 같은 오전·오후로 본다.",
         "- create_reminder 의 날짜는 메시지에 적힌 날짜를 그대로 쓴다. 이미 지난 날짜여도 오늘이나 다른 날로 옮기지 않는다. 지난 시각은 코드가 거절하고 사용자에게 알린다.",
         "- 최근 대화를 보고 '그럼 모레는?' 같은 이어지는 질문의 도구와 인자를 정한다.",
         "- confidence 는 고른 결과가 맞을 확신을 0과 1 사이 숫자로 쓴다.",
@@ -159,9 +165,31 @@ def holiday_range(message, now):
     return {"from": f"{year}-{month:02d}-01", "to": f"{year}-{month:02d}-{last}"}
 
 
-def rule_choose(message, now, location):
+def has_date_words(message, now):
+    """메시지에 날짜 말(오늘·내일·요일·M월 D일)이 있는지. 없으면 약속을 바꿀 때 날짜는 그대로 두고 시각만 바꾼다."""
+    return bool(explicit_dates(message, now) or any(w in message for w in when.DAY_WORDS)
+                or re.search(r"[월화수목금토일]요일", message))
+
+
+def change_request(message, history, now):
+    """'~말고 ~시', '~로 바꿔'처럼 앞 대화의 약속 시각을 바꾸는 말이면 바꿀 시각, 아니면 None."""
+    if not CHANGE_PATTERN.search(message):
+        return None
+    last_answer = next((m["content"] for m in reversed(history) if m["role"] == "assistant"), "")
+    last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+    if not any(REMINDER_TALK.search(t) for t in (message, last_answer, last_user)):
+        return None
+    tail = re.split(r"말고|대신", message)[-1]  # "저녁 7시 말고 아침 7시요" → 바꿀 시각은 '말고' 뒤
+    return when.parse_when(tail, now)
+
+
+def rule_choose(message, now, location, history=()):
     picked = []
-    if any(w in message for w in CANCEL_WORDS) and re.search(r"약속|알림|리마인드", message):
+    change_to = change_request(message, history, now)
+    if change_to:
+        picked.append({"name": "update_reminder", "args": {"query": "", "due_at": change_to.isoformat(),
+                                                           "time_only": not has_date_words(message, now)}})
+    elif any(w in message for w in CANCEL_WORDS) and re.search(r"약속|알림|리마인드", message):
         picked.append({"name": "cancel_reminder", "args": {"query": reminder_text(message.replace("취소", ""))}})
     elif LIST_PATTERN.search(message):
         picked.append({"name": "list_reminders", "args": {}})
@@ -212,6 +240,20 @@ def model_choose(message, history, now, location, llm):
             seen.add(key)
             tools.append({"name": t["name"], "args": args})
     confidence = max(0.0, min(1.0, float(data.get("confidence", 0))))
+    # 안전장치: 약속 시각을 바꾸는 말인데 모델이 새 약속을 만들거나 아무 도구도 안 고르면 바꾸기로 돌린다.
+    # 바꾸기는 '알려 줘'가 없어도 된다(아래 부탁 확인은 새 약속에만 건다).
+    change_to = change_request(message, history, now)
+    if change_to and not any(t["name"] in ("update_reminder", "cancel_reminder") for t in tools):
+        made = [t for t in tools if t["name"] == "create_reminder"]
+        query = str(made[0]["args"].get("text") or "") if made else ""
+        due_at = str(made[0]["args"].get("due_at") or "") if made else change_to.isoformat()
+        tools = [t for t in tools if t not in made]
+        tools.insert(0, {"name": "update_reminder", "args": {"query": query, "due_at": due_at}})
+        confidence = max(confidence, 0.8)
+        guards.append("약속 시각을 바꾸는 말이라 새 약속 대신 저장된 약속의 시각을 바꿉니다.")
+    for t in tools:
+        if t["name"] == "update_reminder" and not has_date_words(message, now):
+            t["args"]["time_only"] = True   # 날짜 말이 없으면 원래 약속 날짜는 그대로, 시각만 바꾼다
     # 안전장치: 알려 달라는 부탁이 없는데 고른 약속은 뺀다(프롬프트로만 막으면 모델이 일정 이야기를 약속으로 저장한다)
     last_answer = next((m["content"] for m in reversed(history) if m["role"] == "assistant"), "")
     if not REQUEST_PATTERN.search(message) and not OFFER_PATTERN.search(last_answer):
@@ -279,10 +321,10 @@ def choose(message, history, now, location, llm):
             result = model_choose(message, history, now, location, llm)
         except Exception as error:  # 모델 응답이 형식에 맞지 않으면 규칙으로 대신한다
             log("WARNING", "모델 도구 선택 실패, 키워드 규칙으로 대신함", error=type(error).__name__)
-            result = rule_choose(message, now, location)
+            result = rule_choose(message, now, location, history)
             result.guards.append("모델 응답을 읽지 못해 키워드 규칙으로 골랐습니다.")
     else:
-        result = rule_choose(message, now, location)
+        result = rule_choose(message, now, location, history)
 
     # 안전장치: 확신이 낮으면 도구를 쓰지 않고 되묻는다
     if result.confidence < CONFIDENCE_THRESHOLD:
