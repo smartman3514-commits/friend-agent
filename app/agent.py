@@ -15,6 +15,7 @@ reply, memory-update, memory-summary. 화면은 이 함수의 결과를 조각�
 chat-turn 은 객체(turn)로 들고 다니고, 단계를 열 때마다 tracing.child 로 turn 을 되살려 그 아래에 붙인다.
 사용자, 세션, 버전 같은 속성(attrs)도 그때마다 함께 걸어 모든 단계에 붙게 한다.
 """
+import re
 from datetime import datetime, timedelta, timezone
 
 from langfuse import propagate_attributes
@@ -83,6 +84,19 @@ def with_tool_note(message, tool_lines):
         return message
     return (f"{message}\n\n[이번 메시지의 도구 결과: 앞선 대화와 달라도 이것이 맞다. 이 표시는 사용자에게 보이지 않으니 "
             f"그대로 옮겨 적지 말고 내용만 캐릭터 말투로 전한다]\n" + "\n".join(f"- {line}" for line in tool_lines))
+
+
+# 11-05 앱: "내가 어디에 있어?"에 지시문 규칙만으로는 "알 수 없어"를 되풀이하거나 "네가 서울에 있다고 해줬어"라고 했다.
+# 위치를 묻는 말이면 확인된 사실을 메시지 옆에 붙인다(연휴 계산처럼 코드가 근거를 준다).
+WHERE_PATTERN = re.compile(r"(내가|나|저|제가)\s*(지금\s*)?어디\s*(에\s*)?(있|야|이야|인지|일까)|내\s*위치|여기\s*어디")
+
+
+def location_note(message, location):
+    if not WHERE_PATTERN.search(message):
+        return []
+    return [f"날씨·미세먼지 지역 설정: {location} (앱 설정값이다. 사용자가 대화에서 말한 것이 아니므로 '네가 말했다'고 하지 않는다)",
+            "실시간 위치(GPS)는 받지 않아 지금 정확히 어디 있는지는 모른다",
+            "다른 곳에 있으면 앱 왼쪽 위 📍를 눌러 지금 위치로 맞출 수 있다고 안내한다"]
 
 
 def run_turn(message, uid, llm, store, show_panel):
@@ -171,7 +185,7 @@ def _turn(turn, message, uid, llm, store, show_panel):
     if show_panel:
         yield {"type": "context", "memories": [m["text"] for m in memories],
                "summary": summary["text"] if summary else None, "recent_messages": len(history)}
-    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": with_tool_note(message, lines)}]
+    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": with_tool_note(message, lines + location_note(message, settings["location"]))}]
     with tracing.inside(turn, attrs):  # 답은 조각마다 이어지므로 '지금 열린 관찰 단위'로 두지 않고 객체로 든다
         gen = turn.start_observation(name="reply", as_type="generation", model=model, input=messages)
     reply, usage = "", {}
