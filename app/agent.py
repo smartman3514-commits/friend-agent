@@ -45,7 +45,10 @@ def system_prompt(character, now, location, memories, summary, tool_lines=(), cl
              # 11-02 staging(동료 트레이스): 기억에도 약속에도 없는 출장을 "내일 7시 출장 일정으로 확인되었습니다"라고 답했다.
              "[확인한 척하지 않기]\n사용자의 일정·예약·약속을 '확인했다', '확인되었다', '저장돼 있다'고 말하려면 "
              "아래 도구 결과나 기억 메모에 근거가 있어야 한다. 근거가 없으면 확인할 수 없다고 솔직히 말하고, "
-             "원하면 약속으로 저장해 알려 줄 수 있다고 묻는다. 사용자가 방금 말한 내용을 되풀이하는 것은 확인이 아니다."]
+             "원하면 약속으로 저장해 알려 줄 수 있다고 묻는다. 사용자가 방금 말한 내용을 되풀이하는 것은 확인이 아니다.\n"
+             # 11-05 staging: 약속 도구가 돌지 않았는데 "아침 7시로 변경했어!"라고 답했다.
+             "약속을 '바꿨다', '변경했다', '옮겼다', '취소했다'고 말하려면 이번 턴의 도구 결과에 그 결과(약속 시각을 바꿨습니다, 약속을 취소했습니다)가 "
+             "있어야 한다. 없으면 아직 바꾸지 못했다고 말하고, 어느 약속을 몇 시로 바꿀지 다시 말해 달라고 한다."]
     block = memory.memory_block(memories, summary, now)
     if block:
         parts.append(block)
@@ -145,7 +148,7 @@ def _turn(turn, message, uid, llm, store, show_panel):
         if show_panel:
             yield {"type": "tool", "name": r.name, "label": TOOLS[r.name]["label"], "ok": r.ok,
                    "summary": r.summary, "data": r.data}
-        if r.ok and r.name in ("create_reminder", "cancel_reminder"):
+        if r.ok and r.name in ("create_reminder", "cancel_reminder", "update_reminder"):
             yield {"type": "reminder", "action": r.name, "summary": r.summary}
 
     # ④ 답 생성
