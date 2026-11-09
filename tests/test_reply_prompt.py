@@ -47,3 +47,13 @@ def test_location_question_gets_a_fact_note():
         assert note and "성남" in note[0] and any("📍" in line for line in note)
     for q in ("어디 가고 싶어?", "내가 어디 가면 좋을까?", "오늘 날씨 어때?"):
         assert location_note(q, "성남") == []
+
+
+def test_speech_note_keeps_character_speech_next_to_the_message():
+    # 과정 15: 반말 친구가 앞선 대화의 자기 존댓말을 따라 하던 문제 — 말투를 이번 메시지 바로 옆에 붙인다
+    from app.agent import speech_note
+    from app.persona import DEFAULT_CHARACTER
+    out = speech_note("내일 출장 스케쥴 확인해줘", DEFAULT_CHARACTER)
+    assert out.startswith("내일 출장 스케쥴 확인해줘") and "말투: 반말" in out and "따라가지 않는다" in out
+    polite = speech_note("안녕", {**DEFAULT_CHARACTER, "speech": "존댓말"})
+    assert "말투: 존댓말" in polite

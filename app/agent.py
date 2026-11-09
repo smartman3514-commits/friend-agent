@@ -86,6 +86,17 @@ def with_tool_note(message, tool_lines):
             f"그대로 옮겨 적지 말고 내용만 캐릭터 말투로 전한다]\n" + "\n".join(f"- {line}" for line in tool_lines))
 
 
+def speech_note(message, character):
+    """이번 메시지 바로 뒤에 캐릭터 말투를 한 번 더 붙인다(모델에게만 보내고 저장하지 않는다).
+
+    2026-11-09(과정 15): 반말 친구가 '확인해줘' 같은 부탁에 비서처럼 존댓말로 바뀌고, 앞선 대화의 자기 존댓말을
+    따라 하며 한 세션 40턴 중 37턴이 존댓말이 됐다(staging 00089). 지시문 맨 앞의 말투 줄만 더 세게 쓴 것은
+    효과가 없었다(고치기 전 56~67% 와 같은 62%). 도구 결과처럼 가장 최근 메시지 옆에 둔 것을 더 따른다.
+    """
+    return (f"{message}\n\n[이번 답의 말투: {character['speech']}. 앞선 대화의 내 답이 다른 말투였어도 따라가지 않는다. "
+            f"이 표시는 사용자에게 보이지 않으니 옮겨 적지 않는다]")
+
+
 # 11-05 앱: "내가 어디에 있어?"에 지시문 규칙만으로는 "알 수 없어"를 되풀이하거나 "네가 서울에 있다고 해줬어"라고 했다.
 # 위치를 묻는 말이면 확인된 사실을 메시지 옆에 붙인다(연휴 계산처럼 코드가 근거를 준다).
 WHERE_PATTERN = re.compile(r"(내가|나|저|제가)\s*(지금\s*)?어디\s*(에\s*)?(있|야|이야|인지|일까)|내\s*위치|여기\s*어디")
@@ -185,7 +196,8 @@ def _turn(turn, message, uid, llm, store, show_panel):
     if show_panel:
         yield {"type": "context", "memories": [m["text"] for m in memories],
                "summary": summary["text"] if summary else None, "recent_messages": len(history)}
-    messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": with_tool_note(message, lines + location_note(message, settings["location"]))}]
+    messages = [{"role": "system", "content": system}, *history,
+                {"role": "user", "content": speech_note(with_tool_note(message, lines + location_note(message, settings["location"])), character)}]
     with tracing.inside(turn, attrs):  # 답은 조각마다 이어지므로 '지금 열린 관찰 단위'로 두지 않고 객체로 든다
         gen = turn.start_observation(name="reply", as_type="generation", model=model, input=messages)
     reply, usage = "", {}
