@@ -54,6 +54,8 @@ def test_ai_reads_the_photo_and_three_credits_are_spent(user):
     r = send_photo()
     assert r.status_code == 200 and r.json()["text"] == "11월 20일 오후 3시 치과"
     assert r.json()["credits_used"] == 3 and store.credit_balance(user) == 27
+    spent = [x for x in store.credit_history(user, 10) if x["delta"] < 0]
+    assert [(x["reason"], x["ref"][:4]) for x in spent] == [("ocr", "ocr:")]   # 원장에 사진 읽기로 따로 남는다
     instruction, size = stub.calls[0]
     assert "옮겨 적어" in instruction
     assert min(size) == ocr.VISION_SHORT_SIDE and max(size) <= ocr.VISION_LONG_SIDE   # 큰 사진은 512px 조각 2개 크기로 줄인다
@@ -64,6 +66,7 @@ def test_failed_reading_gives_the_credits_back(user):
     r = send_photo()
     assert r.status_code == 500
     assert store.credit_balance(user) == 30
+    assert [x["reason"] for x in store.credit_history(user, 10)][:2] == ["refund", "ocr"]
 
 
 def test_not_enough_credits_is_refused_before_reading(user):
@@ -79,3 +82,8 @@ def test_not_enough_credits_is_refused_before_reading(user):
 def test_models_without_vision_fall_back_to_tesseract(monkeypatch):
     monkeypatch.setattr(ocr, "read_with_tesseract", lambda image: "tesseract 결과")
     assert ocr.read_text(photo_bytes((800, 600)), llm=object()) == "tesseract 결과"
+
+
+def test_memory_store_refuses_a_reason_the_database_would_refuse(user):
+    with pytest.raises(ValueError):
+        store.add_credit(user, 1, "bonus", f"test:{uuid.uuid4().hex}")
