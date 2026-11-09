@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+
+# 실제 트레이스에서 만든 평가 데이터(대화 원문) — 올리지 않는다
+data/eval/private/
